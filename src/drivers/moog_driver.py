@@ -29,7 +29,7 @@ Hardware:
     - MOOG 6-DOF platform (parts C12143-004, C37960-002)
     - Connection: Ethernet to ETHER PORT
     - Protocol: UDP, 60Hz bidirectional
-    - Home position: (0, 0, -0.18) meters
+    - Home position: TBD (discover via INF-106)
 
 Packet Format (send):
     6 floats (24 bytes): X, Y, Z, Roll, Pitch, Yaw
@@ -42,16 +42,17 @@ Usage:
     driver = MOOGDriver(ip='192.168.1.100', port=6000)
     driver.connect()
     driver.engage()
-    driver.send_position(x=0, y=0, z=-0.18, roll=0, pitch=0, yaw=0)
+    driver.send_position(Position6DOF())  # Home position
 """
 
 import socket
-import struct
 import logging
 import time
 from typing import Optional
 from dataclasses import dataclass
 from enum import Enum
+
+from src.shared.types import Position6DOF
 
 logger = logging.getLogger(__name__)
 
@@ -77,35 +78,11 @@ class MOOGConfig:
     # Home position
     home_x: float = 0.0
     home_y: float = 0.0
-    home_z: float = -0.18            # -180mm below neutral
+    home_z: float = 0.0              # TBD — discover via INF-106
     
     # Position limits (meters)
     max_translation: float = 0.25    # ±250mm
     max_rotation: float = 0.35       # ±20 degrees in radians
-
-
-@dataclass
-class Position6DOF:
-    """6-DOF position for the MOOG platform."""
-    x: float = 0.0      # Surge (forward/back) in meters
-    y: float = 0.0      # Sway (left/right) in meters
-    z: float = -0.18    # Heave (up/down) in meters
-    roll: float = 0.0   # Roll in radians
-    pitch: float = 0.0  # Pitch in radians
-    yaw: float = 0.0    # Yaw in radians
-    
-    def to_bytes(self) -> bytes:
-        """Pack position into bytes for UDP transmission."""
-        return struct.pack('<ffffff', 
-            self.x, self.y, self.z, 
-            self.roll, self.pitch, self.yaw
-        )
-    
-    @classmethod
-    def from_bytes(cls, data: bytes) -> 'Position6DOF':
-        """Unpack position from received UDP bytes."""
-        values = struct.unpack('<ffffff', data[:24])
-        return cls(*values)
 
 
 class MOOGDriver:
@@ -121,7 +98,7 @@ class MOOGDriver:
         driver = MOOGDriver(ip='192.168.1.100', port=6000)
         driver.connect()
         driver.engage()
-        driver.send_position(Position6DOF(z=-0.18))
+        driver.send_position(Position6DOF())
         driver.disengage()
         driver.close()
     """
