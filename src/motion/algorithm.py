@@ -3,14 +3,15 @@ Motion Algorithm - INF-107
 
 NOTE: This skeleton is a STARTING POINT. Feel free to completely rewrite
 this file if you have a better approach. Just keep the core responsibility:
-convert telemetry data (G-forces) into actuator positions.
+convert telemetry data (G-forces) into 6-DOF platform positions.
 
-Ticket: As a developer, I want a motion algorithm that converts F1 physics data 
-        to actuator positions so that the platform movement matches the game
+Ticket: As a developer, I want a motion algorithm that converts F1 physics data
+        to platform positions so that the platform movement matches the game
 
 Assignee: David
 
-This module converts telemetry data (G-forces, orientation) into actuator positions.
+This module converts telemetry data (G-forces, orientation) into 6-DOF platform
+positions. The MOOG controller handles inverse kinematics internally.
 
 Acceptance Criteria:
     ☐ G-force to position mapping implemented
@@ -49,7 +50,7 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 from src.telemetry.packet_parser import TelemetryData
-from src.drivers.moog_driver import Position6DOF
+from src.shared.types import Position6DOF
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ class MotionConfig:
     smoothing_factor: float = 0.3  # 0 = no smoothing, 1 = no change
     
     # Home position for MOOG
-    home_z: float = -0.18  # MOOG home Z position
+    home_z: float = 0.0  # MOOG home Z position — TBD (INF-106)
 
 
 @dataclass 
@@ -98,11 +99,14 @@ class SMCPosition:
 
 class MotionAlgorithm:
     """
-    Converts F1 telemetry data to actuator positions.
-    
+    Converts F1 telemetry data to platform positions.
+
     The algorithm supports two output modes:
     1. SMC (1-DOF): Maps combined G-forces to a single linear position
-    2. MOOG (6-DOF): Maps G-forces and orientation to full 6-DOF position
+    2. MOOG (6-DOF): Maps G-forces and orientation to 6-DOF platform position
+
+    Note: For MOOG, we output platform position (X,Y,Z,Roll,Pitch,Yaw).
+    The MOOG controller handles inverse kinematics to compute actuator lengths.
     
     Example:
         algo = MotionAlgorithm()
@@ -132,7 +136,7 @@ class MotionAlgorithm:
     
     def calculate(self, telemetry: TelemetryData) -> Union[Position6DOF, SMCPosition]:
         """
-        Calculate actuator position from telemetry (default: 6DOF).
+        Calculate platform position from telemetry (default: 6DOF).
         
         Args:
             telemetry: Parsed telemetry data from F1 game
