@@ -11,8 +11,9 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src import DEBUG
 
+logger = logging.getLogger(__name__)
 
 @dataclass
 class TelemetryData:
@@ -155,6 +156,8 @@ class PacketParser:
 
         self._warn_if_extreme(telemetry)
         self._packets_parsed += 1
+        if DEBUG:
+            print(telemetry)
         return telemetry
 
     def _warn_if_extreme(self, telemetry: TelemetryData) -> None:
