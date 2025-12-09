@@ -1,311 +1,97 @@
 """
 Motion Algorithm - INF-107
 
-NOTE: This skeleton is a STARTING POINT. Feel free to completely rewrite
-this file if you have a better approach. Just keep the core responsibility:
-convert telemetry data (G-forces) into 6-DOF platform positions.
+Converts F1 telemetry (G-forces, orientation) into 6-DOF platform positions.
 
-Ticket: As a developer, I want a motion algorithm that converts F1 physics data
-        to platform positions so that the platform movement matches the game
+Output: Platform position (x, y, z, roll, pitch, yaw) - NOT actuator positions.
+The MOOG controller handles inverse kinematics to calculate actuator lengths internally.
 
-Assignee: David
+This algorithm uses direct mapping:
+- G-forces -> translational positions (surge, sway, heave)
+- Orientation angles -> rotational positions (roll, pitch, yaw)
+- Two scale factors: translation (0.1 = 1G -> 10cm) and rotation (0.5 = 50% of game angles)
 
-This module converts telemetry data (G-forces, orientation) into 6-DOF platform
-positions. The MOOG controller handles inverse kinematics internally.
-
-Acceptance Criteria:
-    ☐ G-force to position mapping implemented
-    ☐ Scale factors configurable (SURGE_SCALE, SWAY_SCALE, etc.)
-    ☐ Output clamped to safe actuator limits
-    ☐ Smoothing/filtering applied to prevent jerky motion
-    ☐ Algorithm works for both SMC (1-DOF) and MOOG (6-DOF)
-    ☐ Unit tests validate output ranges
-    
-Dependencies:
-    - INF-103: Telemetry data structure defined
-
-Motion Cueing Theory:
-    The algorithm uses "washout" filters to:
-    1. Translate G-forces into initial motion
-    2. Gradually return to neutral while maintaining the sensation
-    3. Stay within the platform's physical limits
-    
-    For this project, we use a simplified approach:
-    - Direct mapping of G-forces to positions
-    - Configurable scale factors
-    - Low-pass filtering for smoothness
-
-Usage:
-    from src.motion.algorithm import MotionAlgorithm
-    from src.telemetry.packet_parser import TelemetryData
-    
-    algorithm = MotionAlgorithm()
-    telemetry = TelemetryData(g_force_lateral=0.5, ...)
-    position = algorithm.calculate(telemetry)
+Note: Hardware limit clamping is handled by the drivers, not this algorithm.
+Each driver is responsible for enforcing its hardware-specific limits before sending.
 """
-
-import logging
-import math
-from dataclasses import dataclass
-from typing import Optional, Union
 
 from src.telemetry.packet_parser import TelemetryData
 from src.shared.types import Position6DOF
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class MotionConfig:
-    """
-    Configuration for the motion algorithm.
-    
-    Scale factors control how much the platform moves in response to game forces.
-    Lower values = subtler motion, higher values = more aggressive motion.
-    """
-    # Scale factors (adjust through INF-111 tuning)
-    surge_scale: float = 0.05    # Longitudinal G-force → X translation
-    sway_scale: float = 0.05     # Lateral G-force → Y translation
-    heave_scale: float = 0.03    # Vertical G-force → Z translation
-    roll_scale: float = 0.3      # Lateral G-force → Roll rotation
-    pitch_scale: float = 0.3     # Longitudinal G-force → Pitch rotation
-    yaw_scale: float = 0.1       # Yaw rate → Yaw rotation
-    
-    # Position limits
-    max_translation: float = 0.1  # Max translation in meters (±100mm)
-    max_rotation: float = 0.26    # Max rotation in radians (±15 degrees)
-    
-    # SMC specific (1-DOF)
-    smc_stroke: float = 100.0     # Actuator stroke in mm
-    smc_center: float = 50.0      # Center position in mm
-    
-    # Smoothing (low-pass filter)
-    smoothing_factor: float = 0.3  # 0 = no smoothing, 1 = no change
-    
-    # Home position for MOOG
-    home_z: float = 0.0  # MOOG home Z position — TBD (INF-106)
-
-
-@dataclass 
-class SMCPosition:
-    """Position for the SMC 1-DOF actuator."""
-    position_mm: float  # Position in millimeters (0-100)
-    
-    def clamp(self, min_val: float = 0.0, max_val: float = 100.0) -> 'SMCPosition':
-        """Clamp position to valid range."""
-        self.position_mm = max(min_val, min(max_val, self.position_mm))
-        return self
-
 
 class MotionAlgorithm:
     """
-    Converts F1 telemetry data to platform positions.
+    Converts F1 telemetry to 6-DOF platform positions.
 
-    The algorithm supports two output modes:
-    1. SMC (1-DOF): Maps combined G-forces to a single linear position
-    2. MOOG (6-DOF): Maps G-forces and orientation to 6-DOF platform position
+    Sign conventions:
+        Surge:  -g_longitudinal (braking -> forward push)
+        Sway:   +g_lateral (right turn -> right push)
+        Heave:  +(g_vertical - 1.0) (bump -> platform down)
+        Roll:   lean left/right (positive = right side down)
+        Pitch:  tilt front/back (positive = nose up)
+        Yaw:    rotate left/right (positive = clockwise from above)
 
-    Note: For MOOG, we output platform position (X,Y,Z,Roll,Pitch,Yaw).
-    The MOOG controller handles inverse kinematics to compute actuator lengths.
-    
-    Example:
-        algo = MotionAlgorithm()
-        
-        # For MOOG
-        position_6dof = algo.calculate_6dof(telemetry)
-        
-        # For SMC
-        position_smc = algo.calculate_smc(telemetry)
+    Note: Output is NOT clamped. Drivers must enforce hardware limits.
     """
-    
-    def __init__(self, config: Optional[dict] = None):
-        """
-        Initialize the motion algorithm.
-        
-        Args:
-            config: Configuration dict. If None, uses defaults.
-        """
-        if config:
-            self.config = MotionConfig(**config)
-        else:
-            self.config = MotionConfig()
-        
-        # Previous positions for smoothing
-        self._prev_6dof: Optional[Position6DOF] = None
-        self._prev_smc: Optional[SMCPosition] = None
-    
-    def calculate(self, telemetry: TelemetryData) -> Union[Position6DOF, SMCPosition]:
-        """
-        Calculate platform position from telemetry (default: 6DOF).
-        
-        Args:
-            telemetry: Parsed telemetry data from F1 game
-            
-        Returns:
-            Position6DOF for MOOG platform
-        """
-        return self.calculate_6dof(telemetry)
-    
-    def calculate_6dof(self, telemetry: TelemetryData) -> Position6DOF:
-        """
-        Calculate 6-DOF position for MOOG platform.
-        
-        TODO [David]: Implement this method
-        
-        Args:
-            telemetry: Parsed telemetry data
-            
-        Returns:
-            Position6DOF with X, Y, Z, Roll, Pitch, Yaw
-            
-        Algorithm:
-            1. Map G-forces to translations:
-               - X (surge) = g_force_longitudinal * surge_scale
-               - Y (sway) = g_force_lateral * sway_scale
-               - Z (heave) = (g_force_vertical - 1.0) * heave_scale + home_z
-               
-            2. Map G-forces to rotations (tilt coordination):
-               - Roll = g_force_lateral * roll_scale
-               - Pitch = -g_force_longitudinal * pitch_scale (negative for correct feel)
-               - Yaw = telemetry.yaw * yaw_scale
-               
-            3. Clamp values using _clamp_6dof()
-            
-            4. Apply smoothing using _smooth_6dof()
-            
-            5. Return Position6DOF
-        """
-        # TODO: Implement 6-DOF calculation
-        raise NotImplementedError("INF-107: Implement calculate_6dof()")
-    
-    def calculate_smc(self, telemetry: TelemetryData) -> SMCPosition:
-        """
-        Calculate position for SMC 1-DOF actuator.
-        
-        TODO [David]: Implement this method
-        
-        Args:
-            telemetry: Parsed telemetry data
-            
-        Returns:
-            SMCPosition with position in mm
-            
-        Algorithm:
-            For a single axis, combine G-forces into one motion:
-            
-            1. Calculate combined G-force influence:
-               combined = (g_force_longitudinal * 0.6) + (g_force_lateral * 0.4)
-               
-            2. Map to position:
-               position = center + (combined * scale * stroke / 2)
-               Where:
-               - center = 50mm (middle of stroke)
-               - scale = configurable (start with 1.0)
-               - stroke = 100mm
-               
-            3. Clamp to 0-100mm range
-            
-            4. Apply smoothing using _smooth_smc()
-            
-            5. Return SMCPosition
-        """
-        # TODO: Implement SMC calculation
-        raise NotImplementedError("INF-107: Implement calculate_smc()")
-    
-    def _clamp_6dof(self, position: Position6DOF) -> Position6DOF:
-        """
-        Clamp 6-DOF position to safe limits.
-        
-        TODO [David]: Implement this method
-        
-        Args:
-            position: Unclamped position
-            
-        Returns:
-            Position with values clamped to max_translation and max_rotation
-            
-        Steps:
-            1. Clamp X, Y to ±max_translation
-            2. Clamp Z to (home_z - max_translation) to (home_z + max_translation)
-            3. Clamp Roll, Pitch, Yaw to ±max_rotation
-        """
-        # TODO: Implement clamping
-        raise NotImplementedError("INF-107: Implement _clamp_6dof()")
-    
-    def _smooth_6dof(self, position: Position6DOF) -> Position6DOF:
-        """
-        Apply low-pass filter smoothing to 6-DOF position.
-        
-        TODO [David]: Implement this method
-        
-        Args:
-            position: New calculated position
-            
-        Returns:
-            Smoothed position
-            
-        Algorithm (exponential moving average):
-            smoothed = prev * smoothing_factor + new * (1 - smoothing_factor)
-            
-        Steps:
-            1. If no previous position, return current position
-            2. For each axis, calculate smoothed value
-            3. Store result as new previous position
-            4. Return smoothed position
-        """
-        # TODO: Implement smoothing
-        raise NotImplementedError("INF-107: Implement _smooth_6dof()")
-    
-    def _smooth_smc(self, position: SMCPosition) -> SMCPosition:
-        """
-        Apply low-pass filter smoothing to SMC position.
-        
-        TODO [David]: Implement this method
-        
-        Same algorithm as _smooth_6dof but for single axis.
-        """
-        # TODO: Implement smoothing
-        raise NotImplementedError("INF-107: Implement _smooth_smc()")
-    
-    def reset(self):
-        """Reset smoothing state (call when restarting)."""
-        self._prev_6dof = None
-        self._prev_smc = None
 
+    def __init__(self, config: dict):
+        motion_cfg = config['motion']
+        self.translation_scale = motion_cfg['translation_scale']
+        self.rotation_scale = motion_cfg['rotation_scale']
 
-# For standalone testing
-if __name__ == "__main__":
-    """
-    Test the motion algorithm with sample data.
-    
-    Run: python -m src.motion.algorithm
-    """
-    logging.basicConfig(level=logging.DEBUG)
-    
-    print("Motion Algorithm Test")
-    print("=" * 40)
-    
-    # Create sample telemetry data
-    sample_telemetry = TelemetryData(
-        g_force_lateral=0.5,      # Turning right
-        g_force_longitudinal=-1.0, # Braking
-        g_force_vertical=1.2,      # Slight bump
-        yaw=0.1,
-        pitch=0.05,
-        roll=0.02
-    )
-    
-    print(f"Input: {sample_telemetry}")
-    
-    algorithm = MotionAlgorithm()
-    
-    try:
-        # Test 6-DOF calculation
-        position_6dof = algorithm.calculate_6dof(sample_telemetry)
-        print(f"6-DOF Output: {position_6dof}")
-        
-        # Test SMC calculation
-        position_smc = algorithm.calculate_smc(sample_telemetry)
-        print(f"SMC Output: {position_smc.position_mm}mm")
-    except NotImplementedError as e:
-        print(f"Not implemented: {e}")
+    def calculate(self, telemetry: TelemetryData) -> Position6DOF:
+        """
+        Convert F1 telemetry to platform position.
+
+        Args:
+            telemetry: Current F1 game telemetry
+
+        Returns:
+            Position6DOF (unclamped - driver must enforce limits)
+        """
+        # === TRANSLATIONAL AXES (from G-forces) ===
+
+        surge = -telemetry.g_force_longitudinal * self.translation_scale
+        sway = telemetry.g_force_lateral * self.translation_scale
+        heave = (telemetry.g_force_vertical - 1.0) * self.translation_scale
+
+        # === ROTATIONAL AXES (from angles) ===
+
+        roll = telemetry.roll * self.rotation_scale
+        pitch = telemetry.pitch * self.rotation_scale
+        yaw = telemetry.yaw * self.rotation_scale
+
+        return Position6DOF(
+            x=surge,
+            y=sway,
+            z=heave,
+            roll=roll,
+            pitch=pitch,
+            yaw=yaw
+        )
+
+# Standalone test with recording file
+if __name__ == '__main__':
+    import struct
+    import os
+
+    config = {'motion': {'translation_scale': 0.1, 'rotation_scale': 0.5}}
+    algo = MotionAlgorithm(config)
+
+    # Test with recording
+    recording = 'recordings/spa_60sec.bin'
+    if os.path.exists(recording):
+        from src.telemetry.packet_parser import PacketParser
+        parser = PacketParser()
+
+        with open(recording, 'rb') as f:
+            count = struct.unpack('<I', f.read(4))[0]
+            for _ in range(min(5, count)):
+                ts, length = struct.unpack('<fI', f.read(8))
+                data = f.read(length)
+                tel = parser.parse_motion_packet(data)
+                if tel:
+                    pos = algo.calculate(tel)
+                    print(f"[{ts:.2f}s] G=[{tel.g_force_lateral:+.2f},{tel.g_force_longitudinal:+.2f},{tel.g_force_vertical:+.2f}] -> [{pos.x:+.3f},{pos.y:+.3f},{pos.z:+.3f}]")
+    else:
+        print("No recording found")
