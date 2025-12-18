@@ -35,9 +35,8 @@ class MotionAlgorithm:
     """
 
     def __init__(self, config: dict):
-        motion_cfg = config['motion']
-        self.translation_scale = motion_cfg['translation_scale']
-        self.rotation_scale = motion_cfg['rotation_scale']
+        self.translation_scale = config['translation_scale']
+        self.rotation_scale = config['rotation_scale']
 
     def calculate(self, telemetry: TelemetryData) -> Position6DOF:
         """
