@@ -74,7 +74,7 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
     if os.path.exists(config_path):
         logger.info(f"Loading config from {config_path}")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 if YAML_AVAILABLE and config_path.endswith('.yaml'):
                     return yaml.safe_load(f)
                 else:
