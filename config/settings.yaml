@@ -5,12 +5,20 @@ telemetry:
   port: 20777           # F1 game default UDP port
   buffer_size: 2048     # UDP receive buffer size
 
-# Motion Algorithm Parameters (INF-107)
-# =====================================
+# Motion Algorithm Parameters (INF-107, INF-147)
+# ===============================================
 # Note: Limits are in hardware sections below (drivers enforce them)
 motion:
   translation_scale: 0.1  # G-force to meters (1G = 10cm movement)
   rotation_scale: 0.5     # Angle multiplier (0.5 = 50% of game angles)
+
+  # Hybrid washout filter (INF-147)
+  onset_gain: 1.0         # high-pass gain 
+  sustained_gain: 0.4     # low-pass gain 
+  deadband: 0.08          # noise filter
+  sample_rate: 60.0       # F1 telemetry rate (Hz)
+  washout_freq: 0.4       # high-pass cutoff (Hz) - lower = longer onset
+  sustained_freq: 3.0     # low-pass cutoff (Hz) - lower = smoother
 
 # Hardware Configuration
 # ----------------------
