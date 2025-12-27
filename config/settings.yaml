@@ -13,12 +13,15 @@ motion:
   rotation_scale: 0.5     # Angle multiplier (0.5 = 50% of game angles)
 
   # Hybrid washout filter (INF-147)
-  onset_gain: 1.0         # high-pass gain 
-  sustained_gain: 0.4     # low-pass gain 
+  onset_gain: 1.0         # high-pass gain
+  sustained_gain: 0.4     # low-pass gain
   deadband: 0.08          # noise filter
   sample_rate: 60.0       # F1 telemetry rate (Hz)
   washout_freq: 0.4       # high-pass cutoff (Hz) - lower = longer onset
   sustained_freq: 3.0     # low-pass cutoff (Hz) - lower = smoother
+
+  # Slew rate limiting (INF-148)
+  slew_rate: 0.4          # max position change (m/s) - prevents jerky motion and oscillations
 
 # Hardware Configuration
 # ----------------------

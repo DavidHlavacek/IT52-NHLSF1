@@ -1,8 +1,9 @@
 """
-Motion Algorithm - INF-107, INF-147
+Motion Algorithm - INF-107, INF-147, INF-148
 
-Converts F1 telemetry to 6-DOF platform positions.
-Uses hybrid washout: high-pass for onset cues + low-pass for sustained feel.
+INF-107: Converts F1 telemetry to 6-DOF platform positions.
+INF-147: Uses hybrid washout: high-pass for onset cues + low-pass for sustained feel.
+INF-148: Slew rate limiting: prevents impossible position jumps.
 
 Output in meters. Drivers handle clamping.
 """
@@ -96,8 +97,17 @@ class MotionAlgorithm:
         self.hp_heave = HighPassFilter(washout_freq, sample_rate)
         self.lp_heave = LowPassFilter(sustained_freq, sample_rate)
 
+        # slew rate limiting (INF-148)
+        slew_rate = config.get('slew_rate', 0.4)
+        self.max_delta = slew_rate / sample_rate
+
+        # previous output for slew limiting
+        self._prev_surge = 0.0
+        self._prev_sway = 0.0
+        self._prev_heave = 0.0
+
     def calculate(self, telemetry: TelemetryData) -> Position6DOF:
-        """Convert telemetry to platform position with washout filtering."""
+        """Convert telemetry to platform position with washout filtering and slew limiting."""
         g_long = telemetry.g_force_longitudinal
         g_lat = telemetry.g_force_lateral
         g_vert = telemetry.g_force_vertical
@@ -123,6 +133,15 @@ class MotionAlgorithm:
         heave = (self.hp_heave.process(heave_in) * self.onset_gain +
                  self.lp_heave.process(heave_in) * self.sustained_gain)
 
+        # apply slew rate limiting
+        surge = self._slew_limit(self._prev_surge, surge)
+        sway = self._slew_limit(self._prev_sway, sway)
+        heave = self._slew_limit(self._prev_heave, heave)
+
+        self._prev_surge = surge
+        self._prev_sway = sway
+        self._prev_heave = heave
+
         # rotational axes - direct scaling, no washout
         roll = telemetry.roll * self.rotation_scale
         pitch = telemetry.pitch * self.rotation_scale
@@ -137,6 +156,13 @@ class MotionAlgorithm:
             yaw=yaw
         )
 
+    def _slew_limit(self, prev: float, target: float) -> float:
+        # limit position change per frame
+        delta = target - prev
+        if abs(delta) > self.max_delta:
+            delta = math.copysign(self.max_delta, delta)
+        return prev + delta
+
     def reset(self):
         self.hp_surge.reset()
         self.lp_surge.reset()
@@ -144,6 +170,9 @@ class MotionAlgorithm:
         self.lp_sway.reset()
         self.hp_heave.reset()
         self.lp_heave.reset()
+        self._prev_surge = 0.0
+        self._prev_sway = 0.0
+        self._prev_heave = 0.0
 
 
 # test
@@ -160,6 +189,7 @@ if __name__ == '__main__':
         'sample_rate': 60.0,
         'washout_freq': 0.4,
         'sustained_freq': 3.0,
+        'slew_rate': 0.4,
     }
 
     algo = MotionAlgorithm(config)
