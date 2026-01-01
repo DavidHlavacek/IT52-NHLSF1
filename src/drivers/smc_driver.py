@@ -1,29 +1,22 @@
 """
 SMC Modbus Driver for LECP6P-LEL25LT-900 actuator
 Modbus RTU over RS485, 900mm stroke
+
+INF-105: Core driver implementation
+INF-149: Command rate limiting
 """
 
 import struct
 import time
 from typing import Optional
+from src.shared.types import Position6DOF
 
 try:
     from pymodbus.client import ModbusSerialClient
 except ImportError:
     from pymodbus.client.sync import ModbusSerialClient
 
-try:
-    from src.shared.types import Position6DOF
-except ImportError:
-    from dataclasses import dataclass
-    @dataclass
-    class Position6DOF:
-        x: float = 0.0
-        y: float = 0.0
-        z: float = 0.0
-        roll: float = 0.0
-        pitch: float = 0.0
-        yaw: float = 0.0
+
 
 
 class SMCDriver:
@@ -69,6 +62,14 @@ class SMCDriver:
 
         limits = config.get('limits', {})
         self.max_position_m = limits.get('surge_m', 0.40)
+
+        # rate limiting (INF-149)
+        self.min_command_interval = config.get('min_command_interval', 0.05)
+        self.position_threshold_mm = config.get('position_threshold_mm', 1.0)
+        self._last_command_time = 0.0
+        self._last_position_mm = None
+        self._commands_sent = 0
+        self._commands_skipped = 0
 
         self.client: Optional[ModbusSerialClient] = None
         self._connected = False
@@ -160,10 +161,28 @@ class SMCDriver:
 
         surge_m = max(-self.max_position_m, min(self.max_position_m, position.x))
         game_mm = surge_m * 1000.0
+
+        # rate limiting
+        now = time.time()
+        if now - self._last_command_time < self.min_command_interval:
+            self._commands_skipped += 1
+            return False
+
+        if self._last_position_mm is not None:
+            if abs(game_mm - self._last_position_mm) < self.position_threshold_mm:
+                self._commands_skipped += 1
+                return False
+
         physical_mm = self.center_mm + game_mm
         physical_mm = max(1.0, min(self.stroke_mm - 1.0, physical_mm))
 
-        return self._move_to_physical_mm(physical_mm)
+        if self._move_to_physical_mm(physical_mm):
+            self._last_command_time = now
+            self._last_position_mm = game_mm
+            self._commands_sent += 1
+            return True
+
+        return False
 
     def _move_to_physical_mm(self, position_mm: float) -> bool:
         try:
@@ -220,13 +239,26 @@ class SMCDriver:
         except:
             return False
 
+    def get_stats(self) -> dict:
+        total = self._commands_sent + self._commands_skipped
+        return {
+            "commands_sent": self._commands_sent,
+            "commands_skipped": self._commands_skipped,
+            "total_requests": total,
+            "skip_rate": self._commands_skipped / max(1, total)
+        }
+
+    def reset_stats(self):
+        self._commands_sent = 0
+        self._commands_skipped = 0
+
     def close(self):
         if self._connected:
             try:
                 print("[SMC] Returning to center...")
                 self._move_to_physical_mm(self.center_mm)
                 self._wait_complete(timeout=5.0)
-                
+
                 self._write_coil(self.COIL_SVON, False)
                 print("[SMC] Servo OFF")
             except Exception as e:
@@ -236,7 +268,7 @@ class SMCDriver:
             self.client.close()
 
         self._connected = False
-        print("[SMC] Disconnected")
+        print(f"[SMC] Disconnected. Stats: {self.get_stats()}")
 
     def _wait_complete(self, timeout: float = 10.0) -> bool:
         start = time.time()
