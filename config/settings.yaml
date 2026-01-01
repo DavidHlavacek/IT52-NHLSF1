@@ -34,6 +34,9 @@ hardware:
     parity: "E"           # Even parity
     controller_id: 1      # Modbus slave ID
     stroke_mm: 900.0      # Actuator stroke length (LEL25LT-900)
+    # Command rate limiting (INF-149)
+    min_command_interval: 0.05   # min seconds between commands
+    position_threshold_mm: 1.0   # min position change to send command
     # SMC limits (symmetric, centered at 450mm)
     limits:
       surge_m: 0.45       # ±450mm from center
