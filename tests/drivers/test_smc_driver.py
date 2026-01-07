@@ -10,12 +10,10 @@ Test Design Techniques Used:
 
 Run: pytest tests/drivers/test_smc_driver.py -v
 """
-
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 
 # from src.drivers.smc_driver import SMCDriver, SMCConfig
-
 
 # =============================================================================
 # TEST FIXTURES
@@ -74,7 +72,6 @@ class TestPositionConversion:
         # assert driver._register_to_mm(0) == 0.0
         # assert driver._register_to_mm(10000) == 100.0
         pytest.skip("INF-105: Conversion not yet implemented")
-
 
 # =============================================================================
 # CONNECTION TESTS
