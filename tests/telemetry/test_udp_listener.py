@@ -215,6 +215,34 @@ class TestReceive:
         listener_with_mock_socket.receive()
         assert listener_with_mock_socket._packet_count == 5
 
+    def test_receive_data_on_custom_port(self):
+        """
+        TC-UDP-005: Test that listener can receive data on a custom port.
+        Verifies binding to custom port and successful data reception.
+        """
+        mock_sock = MagicMock(spec=socket.socket)
+        test_data = b'\x01\x02\x03\x04custom_port_data'
+        mock_sock.recvfrom.return_value = (test_data, ('192.168.1.100', 54321))
+
+        with patch('socket.socket', return_value=mock_sock):
+            from src.telemetry.udp_listener import UDPListener
+
+            # Create listener on custom port
+            custom_port = 30000
+            listener = UDPListener(port=custom_port)
+
+            # Verify bound to custom port
+            mock_sock.bind.assert_called_with(('0.0.0.0', custom_port))
+
+            # Receive data on custom port
+            received = listener.receive()
+
+            # Verify data received correctly
+            assert received == test_data
+            assert listener.packet_count == 1
+
+            listener.close()
+
 
 # =============================================================================
 # CLOSE TESTS
@@ -250,6 +278,32 @@ class TestClose:
 
         listener_with_mock_socket.close()
         listener_with_mock_socket.close()  # Should not raise
+
+    def test_close_releases_port_for_rebinding(self):
+        """
+        TC-UDP-004: Test that close() releases the socket so a new listener
+        can bind to the same port.
+        """
+        mock_sock1 = MagicMock(spec=socket.socket)
+        mock_sock2 = MagicMock(spec=socket.socket)
+        mock_sockets = [mock_sock1, mock_sock2]
+
+        with patch('socket.socket', side_effect=mock_sockets):
+            from src.telemetry.udp_listener import UDPListener
+
+            # First listener binds to port
+            listener1 = UDPListener(port=20777)
+            mock_sock1.bind.assert_called_with(('0.0.0.0', 20777))
+
+            # Close first listener
+            listener1.close()
+            mock_sock1.close.assert_called_once()
+            assert listener1.socket is None
+
+            # Second listener can bind to same port after close
+            listener2 = UDPListener(port=20777)
+            mock_sock2.bind.assert_called_with(('0.0.0.0', 20777))
+            listener2.close()
 
 
 # =============================================================================
