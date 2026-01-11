@@ -231,6 +231,8 @@ class TestGForceWarningThreshold:
         (3.0, -2.0, 1.0),
         (-3.0, 2.0, 1.0),
         (5.0, -5.0, 1.5),
+        (6.0, -6.0, 1.0),      # TC-PARSE-006: explicit ±6G test
+        (-6.0, 6.0, 1.0),      # TC-PARSE-006: explicit ±6G test
         (9.9, 9.9, 9.9),
     ])
     def test_normal_g_forces_parsed(self, parser, g_lateral, g_longitudinal, g_vertical):
@@ -292,10 +294,14 @@ class TestErrorHandling:
         assert result is None
 
     def test_random_bytes_handled_gracefully(self, parser):
-        """Test random garbage data doesn't crash parser."""
+        """
+        TC-PARSE-007: Test random garbage data doesn't crash parser.
+        Parser should return None for invalid/unparseable data.
+        """
         garbage = os.urandom(200)
         result = parser.parse_motion_packet(garbage)
-        # Should not crash
+        # Should not crash and should return None for invalid data
+        assert result is None
 
     def test_increments_invalid_packets_counter(self, parser):
         """Test that invalid packets increment invalid_packets counter."""
