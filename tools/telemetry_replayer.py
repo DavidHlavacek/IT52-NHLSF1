@@ -6,6 +6,7 @@ Replays recorded telemetry for offline testing.
 Usage:
     python tools/telemetry_replayer.py recordings/full_lap_20260112_160501.bin
     python tools/telemetry_replayer.py recordings/full_lap_20260112_160501.bin --verbos
+    python tools/telemetry_replayer.py recordings/full_lap_20251223_143022.bin --speed 2.0
 """
 
 import os
