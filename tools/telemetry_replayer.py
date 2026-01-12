@@ -66,7 +66,7 @@ class TelemetryReplay:
         packets = self.load(filepath)
         file_size = os.path.getsize(filepath)
         duration = packets[-1][0] if packets else 0
-        motion_count = sum(1 for _, data in packets if len(data) > 5 and data[5] == 0)
+        motion_count = sum(1 for _, data in packets if len(data) > 6 and data[6] == 0)
         
         return {
             "file": filepath,
