@@ -4,8 +4,8 @@ Telemetry Replay - INF-165
 Replays recorded telemetry for offline testing.
 
 Usage:
-    python -m src.tools.telemetry_replay recordings/full_lap_20251223.bin
-    python -m src.tools.telemetry_replay recordings/full_lap.bin --verbose
+    python tools/telemetry_replayer.py recordings/full_lap_20260112_160501.bin
+    python tools/telemetry_replayer.py recordings/full_lap_20260112_160501.bin --verbos
 """
 
 import os
