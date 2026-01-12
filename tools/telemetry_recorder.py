@@ -5,6 +5,9 @@ Records F1 telemetry data for offline testing and development.
 
 Usage:
     python src/tools/telemetry_recorder.py --name full_lap --duration 60
+    python src/tools/telemetry_recorder.py --name heavy_braking --duration 30
+    python src/tools/telemetry_recorder.py --name high_speed_corners --duration 30
+    
 """
 
 import os
