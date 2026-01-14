@@ -149,7 +149,7 @@ def test_reset_clears_state(algo):
 
 
 # TC-ALGO-012
-def test_six_dof_output(algo):
+def test_six_dof_output(algo, config):
     tel = make_telemetry(
         g_long=-1.0, g_lat=0.5, g_vert=1.2,
         roll=0.1, pitch=0.2, yaw=0.3
@@ -157,7 +157,7 @@ def test_six_dof_output(algo):
     pos = run_frames(algo, tel, 60)
 
     assert isinstance(pos, Position6DOF)
-    rot_scale = algo.config['rotation_scale']
+    rot_scale = config['rotation_scale']
     assert pos.roll == 0.1 * rot_scale
     assert pos.pitch == 0.2 * rot_scale
     assert pos.yaw == 0.3 * rot_scale
