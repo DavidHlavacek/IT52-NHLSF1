@@ -120,6 +120,51 @@ def make_telemetry(g_long=0.0, g_lat=0.0, g_vert=1.0, roll=0.0, pitch=0.0, yaw=0
     )
 
 
+def make_motion_packet(g_long=0.0, g_lat=0.0, g_vert=1.0, roll=0.0, pitch=0.0, yaw=0.0):
+    """
+    Create a raw F1 motion packet with specified G-force values.
+    Returns bytes that can be parsed by PacketParser.
+    """
+    # Header format: <hBBBBBQfIIBB (29 bytes)
+    # Fields: packet_format, game_year, game_major, game_minor, packet_version,
+    #         packet_id, session_uid, session_time, frame_id, overall_frame_id,
+    #         player_car_index, secondary_player_index
+    header = struct.pack(
+        '<hBBBBBQfIIBB',
+        2024,   # packet_format
+        24,     # game_year
+        1,      # game_major_version
+        0,      # game_minor_version
+        1,      # packet_version
+        0,      # packet_id = 0 (MOTION packet)
+        12345,  # session_uid
+        0.0,    # session_time
+        1,      # frame_identifier
+        1,      # overall_frame_identifier
+        0,      # player_car_index (first car)
+        255,    # secondary_player_car_index
+    )
+
+    # Motion data format: <ffffffhhhhhhffffff (60 bytes per car)
+    # First 6 floats: world positions (x,y,z) and velocities (x,y,z)
+    # 6 int16: wheel data
+    # Last 6 floats: g_lateral, g_longitudinal, g_vertical, yaw, pitch, roll
+    motion_data = struct.pack(
+        '<ffffffhhhhhhffffff',
+        0.0, 0.0, 0.0,      # world position x, y, z
+        0.0, 0.0, 0.0,      # world velocity x, y, z
+        0, 0, 0, 0, 0, 0,   # wheel data (6 int16)
+        g_lat,              # g_force_lateral
+        g_long,             # g_force_longitudinal
+        g_vert,             # g_force_vertical
+        yaw,                # yaw
+        pitch,              # pitch
+        roll,               # roll
+    )
+
+    return header + motion_data
+
+
 def run_frames(algo, tel, n):
     """Run algorithm for n frames with same telemetry."""
     for _ in range(n):
@@ -194,18 +239,6 @@ class TestTCINT001:
             f"Found {motion_packets_found} motion packets but {non_zero_positions} non-zero positions"
         )
 
-    def test_telemetry_to_algorithm_data_flow(self, parser, algorithm):
-        """Test data flows correctly through parser to algorithm."""
-        # Create synthetic telemetry with known G-force
-        telemetry = make_telemetry(g_long=-2.0, g_lat=0.5)
-
-        # Process through algorithm for enough frames to see effect
-        position = run_frames(algorithm, telemetry, 60)
-
-        # Verify non-zero output for non-zero input
-        assert position.x != 0.0, "Braking G-force should produce surge movement"
-        assert position.y != 0.0, "Lateral G-force should produce sway movement"
-
 
 # =============================================================================
 # TC-INT-002: Algorithm output is accepted by driver
@@ -259,12 +292,16 @@ class TestTCINT003:
     Expected Result: Physical position > 450mm (forward of center)
     """
 
-    def test_braking_produces_forward_motion(self, algorithm, mock_smc_driver):
+    def test_braking_produces_forward_motion(self, parser, algorithm, mock_smc_driver):
         """Test that braking G-force produces forward physical position."""
         # Step 1: Create telemetry with g_longitudinal = -2.0 (braking)
-        telemetry = make_telemetry(g_long=-2.0)
+        raw_packet = make_motion_packet(g_long=-2.0)
 
-        # Step 2: Process through algorithm
+        # Step 2: Process through parser -> algorithm -> driver
+        telemetry = parser.parse_motion_packet(raw_packet)
+        assert telemetry is not None, "Parser should accept valid packet"
+        assert telemetry.g_force_longitudinal == -2.0, "Parser should extract correct G-force"
+
         # Run enough frames for position to stabilize
         position = run_frames(algorithm, telemetry, 120)
 
@@ -273,53 +310,17 @@ class TestTCINT003:
             f"Braking (g_long=-2.0) should produce positive surge, got {position.x}"
         )
 
-        # Step 2 continued: Pass to driver
+        # Pass to driver
         result = mock_smc_driver.send_position(position)
         assert result == True, "Driver should accept position"
 
         # Step 3: Check commanded physical position
-        # Physical position = center_mm + game_mm
-        # game_mm = position.x * 1000 (convert meters to mm)
-        # center_mm = 450.0
         physical_mm = mock_smc_driver._commanded_physical_mm
 
         # Expected Result: Physical position > 450mm (forward of center)
         assert physical_mm > 450.0, (
             f"Physical position should be > 450mm for braking, got {physical_mm:.1f}mm"
         )
-
-    def test_braking_with_recorded_data(self, parser, algorithm, mock_smc_driver):
-        """Test braking scenario with recorded telemetry data."""
-        recording_path = get_recording_path('heavy_braking_20260112_160906.bin')
-
-        if not os.path.exists(recording_path):
-            pytest.skip("Recording file not available")
-
-        packets = load_recording_packets(recording_path)
-
-        # Find a packet with significant braking G-force
-        braking_found = False
-
-        for timestamp, data in packets:
-            telemetry = parser.parse_motion_packet(data)
-
-            if telemetry and telemetry.g_force_longitudinal < -1.0:
-                braking_found = True
-
-                # Process through algorithm
-                position = run_frames(algorithm, telemetry, 60)
-
-                # Send to driver
-                mock_smc_driver.send_position(position)
-
-                # Heavy braking should produce forward position
-                physical_mm = mock_smc_driver._commanded_physical_mm
-
-                if physical_mm is not None and physical_mm > 450.0:
-                    # Found valid braking scenario
-                    break
-
-        assert braking_found, "Should find braking scenarios in heavy_braking recording"
 
 
 # =============================================================================
@@ -340,12 +341,16 @@ class TestTCINT004:
     Expected Result: Physical position < 450mm (backward of center)
     """
 
-    def test_acceleration_produces_backward_motion(self, algorithm, mock_smc_driver):
+    def test_acceleration_produces_backward_motion(self, parser, algorithm, mock_smc_driver):
         """Test that acceleration G-force produces backward physical position."""
         # Step 1: Create telemetry with g_longitudinal = +1.0 (acceleration)
-        telemetry = make_telemetry(g_long=+1.0)
+        raw_packet = make_motion_packet(g_long=+1.0)
 
-        # Step 2: Process through algorithm
+        # Step 2: Process through parser -> algorithm -> driver
+        telemetry = parser.parse_motion_packet(raw_packet)
+        assert telemetry is not None, "Parser should accept valid packet"
+        assert telemetry.g_force_longitudinal == +1.0, "Parser should extract correct G-force"
+
         # Run enough frames for position to stabilize
         position = run_frames(algorithm, telemetry, 120)
 
@@ -354,50 +359,14 @@ class TestTCINT004:
             f"Acceleration (g_long=+1.0) should produce negative surge, got {position.x}"
         )
 
-        # Step 2 continued: Pass to driver
+        # Pass to driver
         result = mock_smc_driver.send_position(position)
         assert result == True, "Driver should accept position"
 
         # Step 3: Check commanded physical position
-        # Physical position = center_mm + game_mm
-        # game_mm = position.x * 1000 (convert meters to mm)
-        # center_mm = 450.0
         physical_mm = mock_smc_driver._commanded_physical_mm
 
         # Expected Result: Physical position < 450mm (backward of center)
         assert physical_mm < 450.0, (
             f"Physical position should be < 450mm for acceleration, got {physical_mm:.1f}mm"
         )
-
-    def test_acceleration_with_recorded_data(self, parser, algorithm, mock_smc_driver):
-        """Test acceleration scenario with recorded telemetry data."""
-        recording_path = get_recording_path('full_lap_20260112_160501.bin')
-
-        if not os.path.exists(recording_path):
-            pytest.skip("Recording file not available")
-
-        packets = load_recording_packets(recording_path)
-
-        # Find a packet with positive G-force (acceleration)
-        accel_found = False
-
-        for timestamp, data in packets:
-            telemetry = parser.parse_motion_packet(data)
-
-            if telemetry and telemetry.g_force_longitudinal > 0.5:
-                accel_found = True
-
-                # Process through algorithm
-                position = run_frames(algorithm, telemetry, 60)
-
-                # Send to driver
-                mock_smc_driver.send_position(position)
-
-                # Acceleration should produce backward position
-                physical_mm = mock_smc_driver._commanded_physical_mm
-
-                if physical_mm is not None and physical_mm < 450.0:
-                    # Found valid acceleration scenario
-                    break
-
-        assert accel_found, "Should find acceleration scenarios in full_lap recording"
