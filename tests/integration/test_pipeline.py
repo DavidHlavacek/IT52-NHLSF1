@@ -79,8 +79,6 @@ def mock_smc_driver(smc_config):
     driver._commanded_physical_mm = None
 
     # Mock the internal move method to capture position
-    original_move = driver._move_to_physical_mm
-
     def mock_move(position_mm):
         driver._commanded_physical_mm = position_mm
         return True
@@ -272,7 +270,7 @@ class TestTCINT002:
 
         # Step 3: Verify driver accepts it
         # Expected Result: Driver accepts Position6DOF without error
-        assert result == True, "Driver should accept Position6DOF without error"
+        assert result, "Driver should accept Position6DOF without error"
 
 # =============================================================================
 # TC-INT-003: Braking G-force results in forward motion
@@ -312,7 +310,7 @@ class TestTCINT003:
 
         # Pass to driver
         result = mock_smc_driver.send_position(position)
-        assert result == True, "Driver should accept position"
+        assert result, "Driver should accept position"
 
         # Step 3: Check commanded physical position
         physical_mm = mock_smc_driver._commanded_physical_mm
@@ -361,7 +359,7 @@ class TestTCINT004:
 
         # Pass to driver
         result = mock_smc_driver.send_position(position)
-        assert result == True, "Driver should accept position"
+        assert result, "Driver should accept position"
 
         # Step 3: Check commanded physical position
         physical_mm = mock_smc_driver._commanded_physical_mm
