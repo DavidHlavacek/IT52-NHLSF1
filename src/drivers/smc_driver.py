@@ -291,7 +291,7 @@ class SMCDriver:
     def _read_position_mm(self) -> float:
         """Read current actuator position in mm."""
         result = self.client.read_holding_registers(
-            self.REG_CURRENT_POSITION, count=2, slave=self.config.controller_id
+            self.REG_CURRENT_POSITION, count=2, device_id=self.config.controller_id
         )
         if hasattr(result, 'registers') and len(result.registers) >= 2:
             high, low = result.registers
@@ -346,24 +346,24 @@ class SMCDriver:
 
     def _write_coil(self, address: int, value: bool):
         """Write single coil."""
-        self.client.write_coil(address, value, slave=self.config.controller_id)
+        self.client.write_coil(address, value, device_id=self.config.controller_id)
 
     def _read_input(self, address: int) -> bool:
         """Read discrete input."""
-        result = self.client.read_discrete_inputs(address, count=1, slave=self.config.controller_id)
+        result = self.client.read_discrete_inputs(address, count=1, device_id=self.config.controller_id)
         if hasattr(result, 'bits'):
             return result.bits[0]
         return False
 
     def _write_registers(self, address: int, values: list):
         """Write multiple holding registers."""
-        self.client.write_registers(address, values, slave=self.config.controller_id)
+        self.client.write_registers(address, values, device_id=self.config.controller_id)
 
     def _write_int32(self, address: int, value: int):
         """Write 32-bit signed integer to two registers."""
         packed = struct.pack('>i', value)
         high, low = struct.unpack('>HH', packed)
-        self.client.write_registers(address, [high, low], slave=self.config.controller_id)
+        self.client.write_registers(address, [high, low], device_id=self.config.controller_id)
 
     def _wait_for_input(self, address: int, expected: bool, timeout: float = 10.0) -> bool:
         """Wait for discrete input to reach expected state."""
