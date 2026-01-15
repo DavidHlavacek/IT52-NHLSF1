@@ -44,7 +44,8 @@ hardware:
   moog:
     # Network settings - PLACEHOLDER, discover in INF-106
     ip: "192.168.1.100"   # MOOG platform IP address
-    port: 6000            # MOOG UDP port
+    port: 991             # MOOG UDP port (protocol default)
+    timeout_s: 0.1        # socket timeout
     send_rate_hz: 60.0    # Command send rate (match F1 telemetry)
     # MOOG 6DOF2000E limits (from protocol reference)
     limits:
