@@ -7,21 +7,12 @@ import pytest
 from src.motion.algorithm import MotionAlgorithm
 from src.telemetry.packet_parser import TelemetryData
 from src.shared.types import Position6DOF
+from src.utils.config import load_config
 
 
 @pytest.fixture
 def config():
-    return {
-        'translation_scale': 0.1,
-        'rotation_scale': 0.5,
-        'onset_gain': 1.0,
-        'sustained_gain': 0.4,
-        'deadband': 0.08,
-        'sample_rate': 60.0,
-        'washout_freq': 0.4,
-        'sustained_freq': 3.0,
-        'slew_rate': 0.4,
-    }
+    return load_config()['motion']
 
 
 @pytest.fixture
