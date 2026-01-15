@@ -12,8 +12,10 @@ import struct
 import time
 from src.telemetry.udp_listener import UDPListener
 
-# F1 2024 packet structure
-HEADER_FORMAT = '<HBBBBBQLIBB'  # 29 bytes
+# F1 2024 packet structure (CORRECT format - 29 bytes)
+# H=packetFormat, BBBBB=year/major/minor/version/id, Q=sessionUID,
+# f=sessionTime, II=frameId+overallFrameId, BB=playerIdx+secondaryIdx
+HEADER_FORMAT = '<HBBBBBQfIIBB'  # 29 bytes
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
 # CarMotionData: 60 bytes per car
