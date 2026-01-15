@@ -250,6 +250,7 @@ class SMCDriver:
                 logger.error("Servo did not become ready (SVRE timeout)")
                 return False
             logger.info("Servo ready")
+            logger.debug(f"Status before homing: {self.read_all_status()}")
 
             # Step 4: Homing (optional)
             if home_first:
@@ -259,11 +260,35 @@ class SMCDriver:
                 if not self._wait_for_input(SMCInputs.SETON, True, timeout=30.0):
                     logger.error("Homing did not complete (SETON timeout)")
                     return False
-                logger.info("Homing complete")
+                logger.info("Homing complete (SETON high)")
+                logger.debug(f"Status after SETON: {self.read_all_status()}")
 
                 # CRITICAL: Clear SETUP coil after homing!
+                logger.info("Clearing SETUP coil...")
                 self._write_coil(SMCCoils.SETUP, False)
-                time.sleep(0.3)
+                time.sleep(0.5)  # Give controller time to process
+                logger.debug(f"Status after clearing SETUP: {self.read_all_status()}")
+
+                # CRITICAL: Check and reset alarm AFTER homing
+                # Homing can trigger alarms that must be cleared before continuing
+                if self._is_alarm():
+                    logger.warning("Alarm detected after homing - resetting...")
+                    self._reset_alarm()
+                    time.sleep(0.3)
+
+                    # Verify alarm cleared
+                    if self._is_alarm():
+                        logger.error("Failed to clear alarm after homing")
+                        return False
+                    logger.info("Alarm cleared successfully")
+
+                # Re-verify servo is still ready after homing
+                if not self._read_input(SMCInputs.SVRE):
+                    logger.warning("Servo not ready after homing - re-enabling...")
+                    self._write_coil(SMCCoils.SVON, True)
+                    if not self._wait_for_input(SMCInputs.SVRE, True, timeout=5.0):
+                        logger.error("Servo did not become ready after homing")
+                        return False
 
                 pos = self.read_position()
                 logger.info(f"Position after homing: {pos:.1f}mm")
@@ -511,10 +536,25 @@ class SMCDriver:
         return not self._read_input(SMCInputs.ALARM)  # 0=alarm
 
     def _reset_alarm(self):
-        """Reset alarm condition."""
+        """Reset alarm condition with longer pulse."""
+        logger.debug("Pulsing RESET coil...")
         self._write_coil(SMCCoils.RESET, True)
-        time.sleep(0.1)
+        time.sleep(0.2)  # Longer pulse for reliable reset
         self._write_coil(SMCCoils.RESET, False)
+        time.sleep(0.2)  # Wait for controller to process
+
+    def read_all_status(self) -> dict:
+        """Read all status flags for debugging."""
+        status = {
+            "BUSY": self._read_input(SMCInputs.BUSY),
+            "SVRE": self._read_input(SMCInputs.SVRE),
+            "SETON": self._read_input(SMCInputs.SETON),
+            "INP": self._read_input(SMCInputs.INP),
+            "ESTOP": self._read_input(SMCInputs.ESTOP),
+            "ALARM_RAW": self._read_input(SMCInputs.ALARM),  # Raw value (1=OK, 0=alarm)
+            "ALARM_ACTIVE": not self._read_input(SMCInputs.ALARM),  # Interpreted
+        }
+        return status
 
     def _wait_for_input(self, address: int, expected: bool, timeout: float = 10.0) -> bool:
         """Wait for discrete input to reach expected state."""
