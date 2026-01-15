@@ -259,7 +259,13 @@ class SMCDriver:
                     logger.error("Homing did not complete (SETON timeout)")
                     return False
                 logger.info("Homing complete")
-                time.sleep(0.5)
+
+                # CRITICAL: Clear SETUP coil after homing!
+                self._write_coil(SMCCoils.SETUP, False)
+                time.sleep(0.3)
+
+                pos = self.read_position()
+                logger.info(f"Position after homing: {pos:.1f}mm")
 
             # Step 5: Move to center
             logger.info(f"Moving to center position ({self.config.center_mm}mm)...")
@@ -360,11 +366,21 @@ class SMCDriver:
         """
         position_units = int(position_mm * self.POSITION_SCALE)
 
-        self._write_register(SMCRegisters.MOVEMENT_MODE, 1)
+        # Write complete step data (matching dev branch)
+        self._write_register(SMCRegisters.MOVEMENT_MODE, 1)  # Absolute
         self._write_register(SMCRegisters.SPEED, speed)
         self._write_int32(SMCRegisters.POSITION, position_units)
         self._write_register(SMCRegisters.ACCELERATION, self.config.default_accel)
         self._write_register(SMCRegisters.DECELERATION, self.config.default_decel)
+        self._write_register(SMCRegisters.PUSHING_FORCE, 0)
+        self._write_register(SMCRegisters.TRIGGER_LEVEL, 0)
+        self._write_register(SMCRegisters.PUSHING_SPEED, 20)
+        self._write_register(SMCRegisters.MOVING_FORCE, 100)
+        self._write_int32(0x910C, 0)  # AREA_1
+        self._write_int32(0x910E, 0)  # AREA_2
+        self._write_int32(SMCRegisters.IN_POSITION, 100)
+
+        # Start movement
         self._write_register(SMCRegisters.OPERATION_START, 0x0100)
 
         if wait:
