@@ -185,14 +185,38 @@ class SMCDriver:
                 logger.info("Performing homing sequence...")
                 self._write_coil(self.COIL_SETUP, True)
 
-                if not self._wait_for_input(self.INPUT_SETON, True, timeout=10.0):
+                # Wait for SETON (homing complete)
+                for _ in range(100):  # 10 second timeout
+                    if self._read_input(self.INPUT_SETON):
+                        logger.info("Homing complete (SETON high)")
+                        break
+                    time.sleep(0.1)
+                else:
                     logger.error("Homing did not complete (SETON timeout)")
                     return False
-                logger.info("Homing complete (SETON high)")
 
-                # CRITICAL: Clear SETUP coil after homing!
+                # CRITICAL: Clear SETUP coil IMMEDIATELY after SETON goes high!
+                # Leaving SETUP high causes alarm state
                 self._write_coil(self.COIL_SETUP, False)
                 time.sleep(0.3)
+
+                # Reset any alarm that may have triggered during homing
+                logger.info("Resetting any homing alarm...")
+                self._write_coil(self.COIL_RESET, True)
+                time.sleep(0.1)
+                self._write_coil(self.COIL_RESET, False)
+                time.sleep(0.2)
+
+                # Check alarm status
+                if self._read_input(self.INPUT_ALARM):
+                    logger.info("No alarm active (ALARM input high = OK)")
+                else:
+                    logger.warning("ALARM input low - alarm may be active!")
+                    # Try another reset
+                    self._write_coil(self.COIL_RESET, True)
+                    time.sleep(0.1)
+                    self._write_coil(self.COIL_RESET, False)
+                    time.sleep(0.2)
 
                 pos = self._read_position_mm()
                 logger.info(f"Position after homing: {pos:.1f}mm")
