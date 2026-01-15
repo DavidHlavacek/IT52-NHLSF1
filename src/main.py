@@ -246,6 +246,15 @@ class F1MotionSimulator:
                 # Step 3: Calculate actuator position
                 target_position = self.motion_algorithm.calculate(telemetry)
 
+                # Log first few telemetry values to verify data flow
+                if self._stats.motion_packets_processed < 5:
+                    logger.info(
+                        f"[{self._stats.motion_packets_processed+1}] "
+                        f"g_long={telemetry.g_force_longitudinal:+.2f}, "
+                        f"g_lat={telemetry.g_force_lateral:+.2f} -> "
+                        f"target={target_position:.1f}mm"
+                    )
+
                 # Step 4: Send to hardware (or log in dry run)
                 if not self.dry_run and self.driver:
                     self.driver.send_position(target_position)

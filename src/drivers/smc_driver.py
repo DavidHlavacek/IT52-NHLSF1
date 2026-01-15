@@ -165,6 +165,7 @@ class SMCDriver:
         self._last_command_time = 0.0
         self._command_interval = 1.0 / self.config.command_rate_hz
         self._commands_sent = 0
+        self._commands_skipped = 0
         self._last_position = self.config.center_mm
 
     def connect(self) -> bool:
@@ -275,8 +276,21 @@ class SMCDriver:
                 wait=True
             )
 
+            # Verify center position (like dev branch)
+            time.sleep(0.1)
+            pos = self.read_position()
+            logger.info(f"Position after center move: {pos:.1f}mm")
+
+            # Retry if not close enough (like dev branch)
+            if abs(pos - self.config.center_mm) > 10:
+                logger.info("Retrying center move...")
+                self._move_to_position(self.config.center_mm, speed=300, wait=True)
+                time.sleep(0.1)
+                pos = self.read_position()
+                logger.info(f"Position after retry: {pos:.1f}mm")
+
             self._initialized = True
-            logger.info("Initialization complete. Ready for operation.")
+            logger.info(f"Initialization complete. Ready at {pos:.1f}mm")
             return True
 
         except Exception as e:
@@ -305,6 +319,7 @@ class SMCDriver:
         elapsed = now - self._last_command_time
         if elapsed < self._command_interval:
             # Skip this command (rate limited)
+            self._commands_skipped += 1
             return True
 
         # Clamp position to safe limits
@@ -315,19 +330,20 @@ class SMCDriver:
 
         # Only send if position changed significantly (0.5mm threshold)
         if abs(position_mm - self._last_position) < 0.5:
+            self._commands_skipped += 1
             return True
 
         try:
-            # Check if busy (optional - can skip for faster response)
-            # if self._is_busy():
-            #     return True  # Skip, previous move still in progress
-
             # Send position command
             self._send_position_command(position_mm)
 
             self._last_command_time = now
             self._last_position = position_mm
             self._commands_sent += 1
+
+            # Log first few commands sent
+            if self._commands_sent <= 5:
+                logger.info(f"[CMD {self._commands_sent}] Sent position: {position_mm:.1f}mm")
 
             return True
 
@@ -345,12 +361,19 @@ class SMCDriver:
         # Convert mm to 0.01mm units
         position_units = int(position_mm * self.POSITION_SCALE)
 
-        # Write step data
+        # Write ALL step data registers (must match dev branch for actuator to move)
         self._write_register(SMCRegisters.MOVEMENT_MODE, 1)  # Absolute
         self._write_register(SMCRegisters.SPEED, self.config.default_speed)
         self._write_int32(SMCRegisters.POSITION, position_units)
         self._write_register(SMCRegisters.ACCELERATION, self.config.default_accel)
         self._write_register(SMCRegisters.DECELERATION, self.config.default_decel)
+        self._write_register(SMCRegisters.PUSHING_FORCE, 0)
+        self._write_register(SMCRegisters.TRIGGER_LEVEL, 0)
+        self._write_register(SMCRegisters.PUSHING_SPEED, 20)
+        self._write_register(SMCRegisters.MOVING_FORCE, 100)
+        self._write_int32(0x910C, 0)  # AREA_1
+        self._write_int32(0x910E, 0)  # AREA_2
+        self._write_int32(SMCRegisters.IN_POSITION, 100)
 
         # Start movement
         self._write_register(SMCRegisters.OPERATION_START, 0x0100)
@@ -526,6 +549,7 @@ class SMCDriver:
             "connected": self._connected,
             "initialized": self._initialized,
             "commands_sent": self._commands_sent,
+            "commands_skipped": self._commands_skipped,
             "last_position": self._last_position
         }
 
