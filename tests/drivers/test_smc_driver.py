@@ -143,10 +143,6 @@ def _find_write_registers_calls(client):
     return [c.args[0] for c in client.write_registers.call_args_list]
 
 
-# ----------------------------
-# Fixtures
-# ----------------------------
-
 @pytest.fixture
 def smc_module():
     from src.drivers import smc_driver
