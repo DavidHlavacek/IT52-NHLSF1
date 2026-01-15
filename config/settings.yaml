@@ -16,8 +16,15 @@ telemetry:
 # =============================================================================
 # MOTION ALGORITHM SETTINGS
 # =============================================================================
-# These settings control how G-forces are translated to actuator movement.
-# The washout filter provides onset cue while returning to center.
+# DIRECT PROPORTIONAL MAPPING - NOT washout filtering!
+#
+# The actuator position is directly proportional to G-force:
+#   position = center + (g_force * gain)
+#
+# Example with gain=100, center=450:
+#   - Accelerating at 1G → position = 450 + 100 = 550mm
+#   - Braking at 1G → position = 450 - 100 = 350mm
+#   - Coasting (0G) → position = 450mm (center)
 #
 motion:
   # -------------------------------------------------------------------------
@@ -32,49 +39,37 @@ motion:
   dimension: surge
 
   # -------------------------------------------------------------------------
-  # Washout Filter Settings
-  # -------------------------------------------------------------------------
-  # High-pass filter cutoff frequency (Hz)
-  # Lower = more sustained feel but risk hitting limits
-  # Higher = quicker return to center, more responsive
-  # Recommended range: 0.5 - 2.0 Hz
-  highpass_cutoff_hz: 1.0
-
-  # -------------------------------------------------------------------------
   # Gain Settings
   # -------------------------------------------------------------------------
-  # How much the actuator moves per unit of input
-  # For G-forces: mm per G (e.g., 100 = 1G causes 100mm movement)
-  # For angles: mm per radian
-  # START LOW and increase gradually!
+  # How much the actuator moves per G-force
+  # Example: gain=100 means 1G causes 100mm movement from center
+  # With 900mm stroke and 50mm soft limits, max usable travel is 400mm each way
+  # So max safe gain for 4G forces: 400/4 = 100
   gain: 100.0
 
   # -------------------------------------------------------------------------
-  # Anti-Oscillation Settings
+  # Smoothing
   # -------------------------------------------------------------------------
-  # Deadband: Ignore input changes smaller than this value
-  # Units: G (for G-forces) or radians (for angles)
-  # Higher = less responsive but more stable
-  deadband: 0.05
+  # Exponential smoothing factor (0.0 - 1.0)
+  # Higher = more smoothing (slower response, less jitter)
+  # Lower = faster response (more responsive, but noisier)
+  # 0.0 = no smoothing (raw telemetry values)
+  # Recommended: 0.2 - 0.5
+  smoothing: 0.3
 
-  # Slew rate limit: Maximum position change per second (mm/s)
-  # Prevents jerky motion and reduces oscillation
-  # Lower = smoother but slower response
-  slew_rate_limit: 500.0
+  # -------------------------------------------------------------------------
+  # Deadband
+  # -------------------------------------------------------------------------
+  # Ignore G-forces smaller than this value
+  # Helps reduce noise when car is stationary
+  deadband: 0.02
 
   # -------------------------------------------------------------------------
   # Actuator Limits
   # -------------------------------------------------------------------------
   stroke_mm: 900.0      # Total actuator stroke (LEL25LT-900)
   center_mm: 450.0      # Center/home position
-  soft_limit_mm: 50.0   # Safety margin from each end
-
-  # -------------------------------------------------------------------------
-  # Processing Rate
-  # -------------------------------------------------------------------------
-  # Motion algorithm update rate (Hz)
-  # Should match command_rate_hz in hardware settings
-  update_rate_hz: 30.0
+  soft_limit_mm: 50.0   # Safety margin from each end (usable: 50-850mm)
 
 # =============================================================================
 # HARDWARE SETTINGS

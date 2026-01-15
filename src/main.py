@@ -170,13 +170,15 @@ class F1MotionSimulator:
             self.packet_parser = PacketParser()
             logger.info(f"  UDP listener on port {telemetry_config.get('port', 20777)}")
 
-            # 2. Initialize motion algorithm
-            logger.info("Setting up motion algorithm...")
+            # 2. Initialize motion algorithm (DIRECT PROPORTIONAL - not washout!)
+            logger.info("Setting up motion algorithm (DIRECT PROPORTIONAL)...")
             motion_config = create_motion_config_from_dict(self.config.get('motion', {}))
             self.motion_algorithm = MotionAlgorithm(motion_config)
             logger.info(f"  Dimension: {motion_config.dimension.value}")
             logger.info(f"  Gain: {motion_config.gain} mm/G")
-            logger.info(f"  Washout cutoff: {motion_config.highpass_cutoff_hz} Hz")
+            logger.info(f"  Smoothing: {motion_config.smoothing}")
+            logger.info(f"  Center: {motion_config.center_mm}mm")
+            logger.info(f"  Formula: position = {motion_config.center_mm} + (G * {motion_config.gain})")
 
             # 3. Initialize hardware driver (unless dry run)
             if not self.dry_run:

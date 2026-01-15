@@ -1,44 +1,35 @@
 """
-Motion Algorithm - Professional Washout Filter Implementation
+Motion Algorithm - Direct Proportional Mapping
 
-Converts F1 telemetry (G-forces, orientation) into actuator positions.
+Converts F1 telemetry (G-forces) directly to actuator positions.
 
-Research-Based Design:
-    Professional motion simulators use "washout" filters to:
-    1. Provide onset cue (initial motion sensation)
-    2. Gradually return to neutral (washout)
-    3. Stay within physical travel limits
+Design Philosophy:
+    DIRECT PROPORTIONAL - NOT washout filtering!
 
-    For single-axis systems (like our SMC actuator):
-    - High-pass filter the G-force input
-    - Scale and integrate to get position
-    - Apply slew rate limiting for smooth motion
-    - Use deadband to reject telemetry noise
+    The user wants:
+    - Accelerating → actuator moves one direction and STAYS there
+    - Braking → actuator moves opposite direction and STAYS there
+    - Coasting → actuator at center
 
-Filter Theory:
-    High-Pass Filter: y[n] = α * (y[n-1] + x[n] - x[n-1])
-    Where α = τ / (τ + dt), τ = 1 / (2π * cutoff_freq)
+    This is simple proportional mapping:
+    position = center + (g_force * gain)
 
-    This passes rapid changes (onset cue) while filtering out
-    sustained forces (which would exceed travel limits).
+Sign Convention (for surge/longitudinal):
+    - F1 telemetry: positive g_force_longitudinal = acceleration
+    - Our mapping: acceleration → position INCREASES (away from 0)
+                   braking → position DECREASES (toward 0)
 
-Anti-Oscillation Measures:
-    1. Slew rate limiting - max position change per update
-    2. Deadband - ignore small input changes
-    3. Smooth position transitions
-    4. Don't chase every telemetry update
+    So if center is 450mm on 900mm stroke:
+    - Accelerating: position > 450mm (toward 900mm end)
+    - Braking: position < 450mm (toward 0mm end)
 
-Dimension Options:
-    - surge: Longitudinal G-force (braking/acceleration)
-    - sway: Lateral G-force (cornering)
-    - heave: Vertical G-force (bumps/kerbs)
-    - pitch: Pitch angle from game
-    - roll: Roll angle from game
+Smoothing:
+    Simple exponential smoothing to prevent jitter from noisy telemetry.
+    NOT a washout filter - just noise reduction.
 """
 
-import math
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 from enum import Enum
 
@@ -58,39 +49,34 @@ class MotionDimension(Enum):
 
 @dataclass
 class MotionConfig:
-    """
-    Configuration for the motion algorithm.
+    """Configuration for the motion algorithm."""
 
-    All parameters are tunable and should be adjusted based on
-    hardware testing and user preference.
-    """
-    # Dimension selection (which input drives the actuator)
+    # Dimension selection
     dimension: MotionDimension = MotionDimension.SURGE
 
-    # High-pass filter cutoff frequency (Hz)
-    # Lower = more sustained feel, higher = quicker washout
-    # Recommended: 0.5 - 2.0 Hz for surge
-    highpass_cutoff_hz: float = 1.0
+    # Gain: how much actuator moves per G (or per radian for angles)
+    # Example: gain=100 means 1G causes 100mm movement from center
+    gain: float = 100.0
 
-    # Gain (G-force or angle to position scaling)
-    # Units: mm per G (for G-forces) or mm per radian (for angles)
-    gain: float = 100.0  # 1G = 100mm movement
+    # Smoothing factor (0.0-1.0)
+    # Higher = more smoothing (slower response)
+    # Lower = less smoothing (faster but noisier)
+    # 0.0 = no smoothing (raw input)
+    smoothing: float = 0.3
 
-    # Deadband (ignore input changes smaller than this)
-    # Units: G (for G-forces) or radians (for angles)
-    deadband: float = 0.05
-
-    # Slew rate limit (max position change per second)
-    # Prevents jerky motion and reduces oscillation
-    # Units: mm/s
-    slew_rate_limit: float = 500.0
+    # Deadband: ignore G-forces smaller than this
+    deadband: float = 0.02
 
     # Actuator limits
-    stroke_mm: float = 900.0      # Total actuator stroke
-    center_mm: float = 450.0      # Center/home position
-    soft_limit_mm: float = 50.0   # Soft limit from ends (safety margin)
+    stroke_mm: float = 900.0
+    center_mm: float = 450.0
+    soft_limit_mm: float = 50.0
 
-    # Computed limits
+    # NOT USED anymore (was for washout)
+    highpass_cutoff_hz: float = 1.0  # Kept for config compatibility
+    slew_rate_limit: float = 500.0   # Kept for config compatibility
+    update_rate_hz: float = 30.0     # Kept for config compatibility
+
     @property
     def min_position_mm(self) -> float:
         return self.soft_limit_mm
@@ -99,72 +85,15 @@ class MotionConfig:
     def max_position_mm(self) -> float:
         return self.stroke_mm - self.soft_limit_mm
 
-    # Update rate (Hz) - should match command rate to actuator
-    update_rate_hz: float = 30.0  # 30Hz is optimal for SMC
-
-
-@dataclass
-class HighPassFilter:
-    """
-    First-order high-pass filter for washout.
-
-    y[n] = α * (y[n-1] + x[n] - x[n-1])
-    Where α = τ / (τ + dt)
-
-    This passes transient changes while filtering sustained values.
-    """
-    cutoff_hz: float
-    sample_rate_hz: float
-
-    # Internal state
-    _prev_input: float = 0.0
-    _prev_output: float = 0.0
-    _alpha: float = field(init=False)
-
-    def __post_init__(self):
-        """Calculate filter coefficient."""
-        dt = 1.0 / self.sample_rate_hz
-        tau = 1.0 / (2.0 * math.pi * self.cutoff_hz)
-        self._alpha = tau / (tau + dt)
-
-    def update(self, x: float) -> float:
-        """
-        Process one sample through the filter.
-
-        Args:
-            x: Input value (G-force or angle)
-
-        Returns:
-            Filtered output
-        """
-        # High-pass filter equation
-        y = self._alpha * (self._prev_output + x - self._prev_input)
-
-        # Store state for next iteration
-        self._prev_input = x
-        self._prev_output = y
-
-        return y
-
-    def reset(self):
-        """Reset filter state."""
-        self._prev_input = 0.0
-        self._prev_output = 0.0
-
 
 class MotionAlgorithm:
     """
-    Professional motion algorithm with washout filter.
+    Direct proportional motion algorithm.
 
-    Converts F1 telemetry data to single-axis actuator position.
-    Uses high-pass filtering for onset cue with gradual washout.
+    Maps G-forces directly to actuator position:
+        position = center + (g_force * gain)
 
-    Key Features:
-        - Configurable dimension selection (surge/sway/heave/pitch/roll)
-        - High-pass washout filter (prevents exceeding travel limits)
-        - Slew rate limiting (smooth motion, anti-oscillation)
-        - Deadband (noise rejection)
-        - Soft position limits (safety margin from ends)
+    With simple exponential smoothing for noise reduction.
 
     Example:
         config = MotionConfig(dimension=MotionDimension.SURGE, gain=100.0)
@@ -176,37 +105,31 @@ class MotionAlgorithm:
     """
 
     def __init__(self, config: Optional[MotionConfig] = None):
-        """
-        Initialize the motion algorithm.
-
-        Args:
-            config: MotionConfig object. Uses defaults if None.
-        """
+        """Initialize the motion algorithm."""
         self.config = config or MotionConfig()
 
-        # Initialize high-pass filter
-        self._filter = HighPassFilter(
-            cutoff_hz=self.config.highpass_cutoff_hz,
-            sample_rate_hz=self.config.update_rate_hz
-        )
+        # Smoothed input value
+        self._smoothed_input = 0.0
 
-        # State tracking
+        # Current calculated position
         self._current_position = self.config.center_mm
-        self._last_input = 0.0
+
+        # Statistics
         self._samples_processed = 0
 
         logger.info(
             f"Motion algorithm initialized: "
             f"dimension={self.config.dimension.value}, "
             f"gain={self.config.gain}, "
-            f"cutoff={self.config.highpass_cutoff_hz}Hz"
+            f"smoothing={self.config.smoothing}"
         )
 
     def calculate(self, telemetry: TelemetryData) -> float:
         """
         Calculate actuator position from telemetry.
 
-        This is the main entry point for the motion pipeline.
+        DIRECT PROPORTIONAL MAPPING:
+            position = center + (smoothed_g_force * gain)
 
         Args:
             telemetry: Parsed F1 telemetry data
@@ -214,27 +137,23 @@ class MotionAlgorithm:
         Returns:
             Target actuator position in mm
         """
-        # Extract input value based on selected dimension
+        # Extract raw input based on dimension
         raw_input = self._extract_input(telemetry)
 
         # Apply deadband
-        if abs(raw_input - self._last_input) < self.config.deadband:
-            raw_input = self._last_input
-        self._last_input = raw_input
+        if abs(raw_input) < self.config.deadband:
+            raw_input = 0.0
 
-        # Apply high-pass washout filter
-        filtered = self._filter.update(raw_input)
+        # Apply exponential smoothing (simple low-pass, NOT washout!)
+        # smoothed = smoothing * old + (1 - smoothing) * new
+        alpha = self.config.smoothing
+        self._smoothed_input = alpha * self._smoothed_input + (1.0 - alpha) * raw_input
 
-        # Scale to position offset from center
-        offset_mm = filtered * self.config.gain
-
-        # Calculate target position
+        # DIRECT PROPORTIONAL: position = center + (input * gain)
+        offset_mm = self._smoothed_input * self.config.gain
         target_mm = self.config.center_mm + offset_mm
 
-        # Apply slew rate limiting
-        target_mm = self._apply_slew_rate(target_mm)
-
-        # Clamp to soft limits
+        # Clamp to safe limits
         target_mm = self._clamp_position(target_mm)
 
         # Update state
@@ -245,27 +164,27 @@ class MotionAlgorithm:
 
     def _extract_input(self, telemetry: TelemetryData) -> float:
         """
-        Extract the relevant input value based on dimension selection.
+        Extract the relevant input value based on dimension.
 
-        Args:
-            telemetry: Parsed telemetry data
+        Sign conventions for F1 2024:
+            g_force_longitudinal: positive = acceleration, negative = braking
+            g_force_lateral: positive = turning right, negative = turning left
+            g_force_vertical: ~1.0 at rest (gravity), higher on bumps
 
-        Returns:
-            Input value (G-force or angle)
-
-        Note on sign conventions:
-            - Surge: Negative g_force_longitudinal = braking = push forward
-                    We invert so braking moves actuator forward (positive)
-            - Sway: Positive g_force_lateral = right turn = push right
-            - Heave: Subtract 1.0 to remove gravity baseline
+        For SURGE dimension:
+            We want: acceleration → position increases (toward stroke end)
+                     braking → position decreases (toward 0)
+            So we use g_force_longitudinal directly (positive = forward motion)
         """
         dim = self.config.dimension
 
         if dim == MotionDimension.SURGE:
-            # Invert: braking (negative G) should move forward (positive)
-            return -telemetry.g_force_longitudinal
+            # Positive g_long = acceleration = move toward high end
+            # Negative g_long = braking = move toward low end
+            return telemetry.g_force_longitudinal
 
         elif dim == MotionDimension.SWAY:
+            # Positive = right turn = move one way
             return telemetry.g_force_lateral
 
         elif dim == MotionDimension.HEAVE:
@@ -279,90 +198,42 @@ class MotionAlgorithm:
             return telemetry.roll
 
         else:
-            logger.warning(f"Unknown dimension: {dim}")
             return 0.0
 
-    def _apply_slew_rate(self, target_mm: float) -> float:
-        """
-        Limit the rate of position change to prevent jerky motion.
-
-        Args:
-            target_mm: Desired target position
-
-        Returns:
-            Rate-limited target position
-        """
-        # Calculate max change per update
-        dt = 1.0 / self.config.update_rate_hz
-        max_change = self.config.slew_rate_limit * dt
-
-        # Calculate required change
-        change = target_mm - self._current_position
-
-        # Limit change magnitude
-        if abs(change) > max_change:
-            change = math.copysign(max_change, change)
-
-        return self._current_position + change
-
     def _clamp_position(self, position_mm: float) -> float:
-        """
-        Clamp position to safe operating range.
-
-        Args:
-            position_mm: Target position
-
-        Returns:
-            Clamped position within soft limits
-        """
+        """Clamp position to safe operating range."""
         return max(
             self.config.min_position_mm,
             min(self.config.max_position_mm, position_mm)
         )
 
     def reset(self):
-        """
-        Reset algorithm state (call when restarting or returning to center).
-        """
-        self._filter.reset()
+        """Reset algorithm state."""
+        self._smoothed_input = 0.0
         self._current_position = self.config.center_mm
-        self._last_input = 0.0
         logger.info("Motion algorithm reset")
 
     def return_to_center(self) -> float:
-        """
-        Get center position (for shutdown or pause).
-
-        Returns:
-            Center position in mm
-        """
+        """Get center position."""
         return self.config.center_mm
 
     @property
     def current_position(self) -> float:
-        """Current position in mm."""
         return self._current_position
 
     @property
     def stats(self) -> dict:
-        """Return algorithm statistics."""
         return {
             "samples_processed": self._samples_processed,
             "current_position": self._current_position,
+            "smoothed_input": self._smoothed_input,
             "dimension": self.config.dimension.value
         }
 
 
 def create_motion_config_from_dict(config_dict: dict) -> MotionConfig:
-    """
-    Create MotionConfig from a configuration dictionary.
+    """Create MotionConfig from configuration dictionary."""
 
-    Args:
-        config_dict: Dictionary with configuration values
-
-    Returns:
-        MotionConfig object
-    """
     # Map dimension string to enum
     dimension_str = config_dict.get("dimension", "surge").lower()
     try:
@@ -373,97 +244,69 @@ def create_motion_config_from_dict(config_dict: dict) -> MotionConfig:
 
     return MotionConfig(
         dimension=dimension,
-        highpass_cutoff_hz=config_dict.get("highpass_cutoff_hz", 1.0),
         gain=config_dict.get("gain", 100.0),
-        deadband=config_dict.get("deadband", 0.05),
-        slew_rate_limit=config_dict.get("slew_rate_limit", 500.0),
+        smoothing=config_dict.get("smoothing", 0.3),
+        deadband=config_dict.get("deadband", 0.02),
         stroke_mm=config_dict.get("stroke_mm", 900.0),
         center_mm=config_dict.get("center_mm", 450.0),
         soft_limit_mm=config_dict.get("soft_limit_mm", 50.0),
+        # Legacy params (ignored)
+        highpass_cutoff_hz=config_dict.get("highpass_cutoff_hz", 1.0),
+        slew_rate_limit=config_dict.get("slew_rate_limit", 500.0),
         update_rate_hz=config_dict.get("update_rate_hz", 30.0)
     )
 
 
 # For standalone testing
 if __name__ == "__main__":
-    """
-    Test the motion algorithm with simulated telemetry.
-
-    Run: python -m src.motion.algorithm
-    """
+    """Test direct proportional mapping."""
     import time
     logging.basicConfig(level=logging.DEBUG)
 
-    print("Motion Algorithm Test")
+    print("Motion Algorithm Test - Direct Proportional")
     print("=" * 50)
 
-    # Create algorithm with default config
     config = MotionConfig(
         dimension=MotionDimension.SURGE,
-        gain=100.0,  # 1G = 100mm
-        highpass_cutoff_hz=1.0,
-        slew_rate_limit=500.0
+        gain=100.0,      # 1G = 100mm movement
+        smoothing=0.3,   # Light smoothing
+        center_mm=450.0
     )
     algo = MotionAlgorithm(config)
 
-    print(f"Config: {config}")
-    print(f"Position limits: {config.min_position_mm} - {config.max_position_mm} mm")
+    print(f"Config: gain={config.gain}, center={config.center_mm}mm")
+    print(f"Limits: {config.min_position_mm} - {config.max_position_mm}mm")
     print()
 
-    # Simulate braking event
-    print("Simulating braking event (2G deceleration for 0.5s)...")
+    # Test cases
+    test_cases = [
+        (0.0, "Coasting (0G)"),
+        (1.0, "Accelerating (1G)"),
+        (2.0, "Hard acceleration (2G)"),
+        (-1.0, "Braking (1G)"),
+        (-2.0, "Hard braking (2G)"),
+        (0.0, "Back to coasting"),
+    ]
+
+    print("Testing direct proportional mapping:")
     print("-" * 50)
 
-    dt = 1.0 / 30.0  # 30Hz
-    positions = []
+    for g_force, desc in test_cases:
+        # Simulate a few samples to let smoothing settle
+        for _ in range(10):
+            telemetry = TelemetryData(
+                g_force_lateral=0.0,
+                g_force_longitudinal=g_force,
+                g_force_vertical=1.0,
+                yaw=0.0, pitch=0.0, roll=0.0
+            )
+            pos = algo.calculate(telemetry)
 
-    # Ramp up braking
-    for i in range(15):  # 0.5s at 30Hz
-        g_long = -2.0  # 2G braking
-        telemetry = TelemetryData(
-            g_force_lateral=0.0,
-            g_force_longitudinal=g_long,
-            g_force_vertical=1.0,
-            yaw=0.0, pitch=0.0, roll=0.0
-        )
-        pos = algo.calculate(telemetry)
-        positions.append(pos)
-        print(f"t={i*dt:.2f}s: G={g_long:.1f}, pos={pos:.1f}mm")
-
-    # Release brake (washout)
-    print("\nReleasing brake (washout)...")
-    for i in range(45):  # 1.5s washout
-        g_long = 0.0
-        telemetry = TelemetryData(
-            g_force_lateral=0.0,
-            g_force_longitudinal=g_long,
-            g_force_vertical=1.0,
-            yaw=0.0, pitch=0.0, roll=0.0
-        )
-        pos = algo.calculate(telemetry)
-        positions.append(pos)
-        if i % 5 == 0:
-            print(f"t={(15+i)*dt:.2f}s: G={g_long:.1f}, pos={pos:.1f}mm")
+        expected = config.center_mm + (g_force * config.gain)
+        print(f"{desc:25s}: G={g_force:+.1f} -> pos={pos:.1f}mm (expected ~{expected:.0f}mm)")
 
     print()
-    print(f"Final position: {algo.current_position:.1f}mm")
-    print(f"Center position: {config.center_mm:.1f}mm")
-    print(f"Position should return toward center due to washout filter")
-
-    # Test different dimensions
-    print("\n" + "=" * 50)
-    print("Testing dimension selection...")
-
-    for dim in MotionDimension:
-        config = MotionConfig(dimension=dim, gain=100.0)
-        algo = MotionAlgorithm(config)
-
-        telemetry = TelemetryData(
-            g_force_lateral=1.0,
-            g_force_longitudinal=-1.5,
-            g_force_vertical=1.2,
-            yaw=0.1, pitch=0.05, roll=0.03
-        )
-
-        pos = algo.calculate(telemetry)
-        print(f"{dim.value:8s}: position = {pos:.1f}mm")
+    print("Expected behavior:")
+    print("  - Accelerating: position > 450mm (toward 900mm)")
+    print("  - Braking: position < 450mm (toward 0mm)")
+    print("  - Coasting: position = 450mm (center)")
