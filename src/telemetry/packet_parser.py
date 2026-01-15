@@ -156,7 +156,9 @@ class PacketParser:
 
     # Struct formats (little-endian, packed)
     # Header: uint16 + uint8*5 + uint64 + float + uint32*2 + uint8*2 = 29 bytes
-    HEADER_FORMAT = '<HBBBBBQLIBB'
+    # H=packetFormat, BBBBB=year/major/minor/version/id, Q=sessionUID,
+    # f=sessionTime, II=frameId+overallFrameId, BB=playerIdx+secondaryIdx
+    HEADER_FORMAT = '<HBBBBBQfIIBB'
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 29 bytes
 
     # CarMotionData: 6 floats + 6 int16 + 6 floats = 60 bytes
