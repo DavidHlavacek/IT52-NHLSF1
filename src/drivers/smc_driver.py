@@ -32,15 +32,16 @@ from typing import Optional
 from dataclasses import dataclass
 from enum import IntEnum
 
-# pymodbus for Modbus communication
+# pymodbus for Modbus communication (handle different versions)
 try:
     from pymodbus.client import ModbusSerialClient
     from pymodbus.exceptions import ModbusException
-    PYMODBUS_AVAILABLE = True
 except ImportError:
-    PYMODBUS_AVAILABLE = False
-    ModbusSerialClient = None
-    ModbusException = Exception
+    # Fallback for older pymodbus versions (< 3.0)
+    from pymodbus.client.sync import ModbusSerialClient
+    from pymodbus.exceptions import ModbusException
+
+PYMODBUS_AVAILABLE = True
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +181,7 @@ class SMCDriver:
                 parity=self.config.parity,
                 stopbits=1,
                 bytesize=8,
-                timeout=0.5
+                timeout=1.0
             )
 
             if not self.client.connect():

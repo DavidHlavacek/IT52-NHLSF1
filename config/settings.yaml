@@ -85,7 +85,7 @@ hardware:
   # ---------------------------------------------------------------------------
   smc:
     # Serial connection
-    port: "/dev/ttyUSB0"    # Linux: /dev/ttyUSB0, Windows: COM3
+    port: "COM5"            # Linux: /dev/ttyUSB0, Windows: COM5
     baudrate: 38400         # Fixed by SMC protocol
     parity: "N"             # No parity (some controllers use "E")
     controller_id: 1        # Modbus slave ID
