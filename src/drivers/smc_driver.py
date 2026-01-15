@@ -21,12 +21,13 @@ from dataclasses import dataclass
 
 # pymodbus for Modbus communication
 try:
-    from pymodbus.client import ModbusSerialClient
+    from pymodbus.client import ModbusSerialClient, ModbusTcpClient
 except ImportError:
     try:
-        from pymodbus.client.sync import ModbusSerialClient
+        from pymodbus.client.sync import ModbusSerialClient, ModbusTcpClient
     except ImportError:
         ModbusSerialClient = None
+        ModbusTcpClient = None
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,19 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SMCConfig:
     """Configuration for SMC controller connection."""
+    # Connection type: 'serial' (RS485) or 'tcp' (Ethernet)
+    connection_type: str = 'serial'
+
+    # Serial settings (for RS485 Modbus RTU)
     port: str = '/dev/ttyUSB0'
     baudrate: int = 38400
     parity: str = 'N'
+
+    # TCP settings (for Modbus TCP via gateway)
+    host: str = '192.168.1.100'
+    tcp_port: int = 502
+
+    # Common settings
     controller_id: int = 1
     stroke_mm: float = 900.0
     center_mm: float = 450.0
@@ -103,7 +114,7 @@ class SMCDriver:
         else:
             self.config = SMCConfig()
 
-        self.client: Optional[ModbusSerialClient] = None
+        self.client = None  # Can be ModbusSerialClient or ModbusTcpClient
         self._connected = False
         self._initialized = False
         self._last_command_time = 0.0
@@ -112,23 +123,43 @@ class SMCDriver:
         self._last_position = self.config.center_mm
 
     def connect(self) -> bool:
-        """Establish Modbus connection to the SMC controller."""
+        """
+        Establish Modbus connection to the SMC controller.
+
+        Supports two connection types:
+        - 'serial': RS485 Modbus RTU via USB adapter (LEC-W2 cable)
+        - 'tcp': Modbus TCP via Ethernet gateway
+        """
         try:
-            self.client = ModbusSerialClient(
-                port=self.config.port,
-                baudrate=self.config.baudrate,
-                parity=self.config.parity,
-                stopbits=1,
-                bytesize=8,
-                timeout=1.0
-            )
+            if self.config.connection_type == 'tcp':
+                # Modbus TCP (Ethernet via gateway)
+                if ModbusTcpClient is None:
+                    raise ImportError("ModbusTcpClient not available")
+
+                self.client = ModbusTcpClient(
+                    host=self.config.host,
+                    port=self.config.tcp_port,
+                    timeout=1.0
+                )
+                connection_str = f"{self.config.host}:{self.config.tcp_port}"
+            else:
+                # Modbus RTU (RS485 serial)
+                self.client = ModbusSerialClient(
+                    port=self.config.port,
+                    baudrate=self.config.baudrate,
+                    parity=self.config.parity,
+                    stopbits=1,
+                    bytesize=8,
+                    timeout=1.0
+                )
+                connection_str = self.config.port
 
             if not self.client.connect():
-                logger.error(f"Failed to connect to {self.config.port}")
+                logger.error(f"Failed to connect to {connection_str}")
                 return False
 
             self._connected = True
-            logger.info(f"Connected to SMC controller on {self.config.port}")
+            logger.info(f"Connected to SMC controller via {self.config.connection_type.upper()} on {connection_str}")
 
             # Quick connectivity test
             try:

@@ -54,8 +54,8 @@ motion:
   # Higher = more smoothing (slower response, less jitter)
   # Lower = faster response (more responsive, but noisier)
   # 0.0 = no smoothing (raw telemetry values)
-  # Recommended: 0.3 - 0.6 for stable motion
-  smoothing: 0.5
+  # F1 telemetry is VERY noisy - need 0.8+ for stability
+  smoothing: 0.85
 
   # -------------------------------------------------------------------------
   # Deadband
@@ -80,10 +80,19 @@ hardware:
   # SMC LECP6P Controller Settings
   # ---------------------------------------------------------------------------
   smc:
-    # Serial connection
+    # Connection type: 'serial' (RS485 via LEC-W2) or 'tcp' (Ethernet via gateway)
+    connection_type: "serial"
+
+    # Serial settings (for RS485 Modbus RTU via LEC-W2 cable)
     port: "COM5"            # Linux: /dev/ttyUSB0, Windows: COM5
     baudrate: 38400         # Fixed by SMC protocol
     parity: "N"             # No parity (some controllers use "E")
+
+    # TCP settings (for Modbus TCP via Ethernet gateway)
+    # Use this with a Waveshare RS485-to-Ethernet or similar gateway
+    host: "192.168.1.100"   # Gateway IP address
+    tcp_port: 502           # Modbus TCP port (standard: 502)
+
     controller_id: 1        # Modbus slave ID
 
     # Actuator specifications (LEL25LT-900)
