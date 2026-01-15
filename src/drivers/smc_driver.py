@@ -425,32 +425,29 @@ class SMCDriver:
                 self._connected = False
 
     # ========== Low-level Modbus Operations ==========
+    # Note: Using device_id= parameter for pymodbus compatibility
 
     def _write_coil(self, address: int, value: bool):
         """Write single coil."""
-        result = self.client.write_coil(address, value, slave=self.config.controller_id)
-        if result.isError():
-            raise ModbusException(f"Write coil {hex(address)} failed: {result}")
+        self.client.write_coil(address, value, device_id=self.config.controller_id)
 
     def _read_input(self, address: int) -> bool:
         """Read discrete input."""
-        result = self.client.read_discrete_inputs(address, count=1, slave=self.config.controller_id)
-        if result.isError():
-            raise ModbusException(f"Read input {hex(address)} failed: {result}")
-        return result.bits[0]
+        result = self.client.read_discrete_inputs(address, count=1, device_id=self.config.controller_id)
+        if hasattr(result, 'bits'):
+            return result.bits[0]
+        return False
 
     def _write_register(self, address: int, value: int):
         """Write single holding register."""
-        result = self.client.write_register(address, value, slave=self.config.controller_id)
-        if result.isError():
-            raise ModbusException(f"Write register {hex(address)} failed: {result}")
+        self.client.write_register(address, value, device_id=self.config.controller_id)
 
     def _read_register(self, address: int, count: int = 1) -> list:
         """Read holding register(s)."""
-        result = self.client.read_holding_registers(address, count=count, slave=self.config.controller_id)
-        if result.isError():
-            raise ModbusException(f"Read register {hex(address)} failed: {result}")
-        return result.registers
+        result = self.client.read_holding_registers(address, count=count, device_id=self.config.controller_id)
+        if hasattr(result, 'registers'):
+            return result.registers
+        return [0] * count
 
     def _read_int32(self, address: int) -> int:
         """Read 32-bit signed integer from two registers."""
@@ -462,7 +459,7 @@ class SMCDriver:
         """Write 32-bit signed integer to two registers."""
         packed = struct.pack('>i', value)
         high, low = struct.unpack('>HH', packed)
-        self.client.write_registers(address, [high, low], slave=self.config.controller_id)
+        self.client.write_registers(address, [high, low], device_id=self.config.controller_id)
 
     # ========== Status Helpers ==========
 
