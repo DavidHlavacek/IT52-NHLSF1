@@ -166,22 +166,24 @@ class MotionAlgorithm:
         """
         Extract the relevant input value based on dimension.
 
-        Sign conventions for F1 2024:
-            g_force_longitudinal: positive = acceleration, negative = braking
+        F1 2024 Sign Conventions (INVERTED from physics!):
+            g_force_longitudinal: NEGATIVE = acceleration, POSITIVE = braking
             g_force_lateral: positive = turning right, negative = turning left
             g_force_vertical: ~1.0 at rest (gravity), higher on bumps
 
         For SURGE dimension:
-            We want: acceleration → position increases (toward stroke end)
-                     braking → position decreases (toward 0)
-            So we use g_force_longitudinal directly (positive = forward motion)
+            We want: acceleration → position increases (toward 900mm end)
+                     braking → position decreases (toward 0mm end)
+            F1 gives us: acceleration = negative, braking = positive
+            So we NEGATE the value to get correct mapping.
         """
         dim = self.config.dimension
 
         if dim == MotionDimension.SURGE:
-            # Positive g_long = acceleration = move toward high end
-            # Negative g_long = braking = move toward low end
-            return telemetry.g_force_longitudinal
+            # F1: negative = acceleration, positive = braking
+            # We negate so: acceleration → positive → position increases
+            #               braking → negative → position decreases
+            return -telemetry.g_force_longitudinal
 
         elif dim == MotionDimension.SWAY:
             # Positive = right turn = move one way
