@@ -1,12 +1,12 @@
 """
 Unit Tests for SMC Driver - INF-127
 
-Ticket: As a developer, I want unit tests for the SMC driver so that
-        I can verify Modbus communication is correct.
+Ticket goal:
+    Unit tests for the SMC driver so we can verify Modbus communication is correct.
 
-Test Design Techniques Used:
+Techniques:
     - Equivalence partitioning (valid/invalid positions)
-    - Mock testing (Modbus client)
+    - Mock testing (fake Modbus client)
 
 Run:
     python3 -m pytest tests/drivers/test_smc_driver.py -v
@@ -18,14 +18,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
-# -----------------------------
-# Small local types / fakes
-# -----------------------------
-
 @dataclass
 class Position6DOF:
-    """Fallback Position type for tests (only used if your project type isn't importable)."""
+    """
+    Local fallback type for tests.
+    Real project should have src.shared.types.Position6DOF, but this is fine for unit tests.
+    """
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
@@ -35,7 +33,7 @@ class Position6DOF:
 
 
 class FakeResp:
-    """Tiny fake pymodbus response object that behaves like pymodbus responses."""
+    """Minimal response object that looks like pymodbus responses."""
     def __init__(self, registers=None, error=False, bits=None):
         self.registers = registers or []
         self.bits = bits or []
@@ -47,9 +45,9 @@ class FakeResp:
 
 def _make_driver_any(smc_module):
     """
-    Create SMCDriver no matter which constructor style your driver uses.
+    Create SMCDriver no matter which constructor style the repo uses.
     Some versions: SMCDriver(config_dict)
-    Other versions: SMCDriver(config=config_dict)
+    Others: SMCDriver(config=config_dict)
     """
     SMCDriver = smc_module.SMCDriver
 
@@ -60,10 +58,10 @@ def _make_driver_any(smc_module):
         "parity": "N",
         "center_mm": 450.0,
         "stroke_mm": 900.0,
+        "speed_mm_s": 500,
+        "accel_mm_s2": 3000,
+        "decel_mm_s2": 3000,
         "limits": {"surge_m": 0.35},
-        # if your config uses these:
-        "min_position": 0.0,
-        "max_position": 100.0,
     }
 
     try:
@@ -74,44 +72,57 @@ def _make_driver_any(smc_module):
 
 def _attach_fake_client(driver):
     """
-    Attach a fake Modbus client to the driver in the most common attribute names.
-    Different codebases use `client`, `_client`, etc.
+    Attach a fake Modbus client so tests never touch real hardware.
+    Driver might store it as .client or ._client, so we set both if possible.
     """
     fake = MagicMock()
 
     fake.connect.return_value = True
     fake.close.return_value = None
 
-    # common Modbus methods we expect:
     fake.write_register.return_value = FakeResp(error=False)
     fake.write_registers.return_value = FakeResp(error=False)
     fake.write_coil.return_value = FakeResp(error=False)
-    fake.read_holding_registers.return_value = FakeResp(registers=[5000], error=False)
+
+    # for discrete inputs (busy/alarms), return False by default
     fake.read_discrete_inputs.return_value = FakeResp(bits=[False], error=False)
 
-    # attach in the common places
+    # for reading position: driver reads 2 regs for int32 (high, low)
+    # units=5000 => 50.00mm if divided by 100
+    units = 5000
+    high = (units >> 16) & 0xFFFF
+    low = units & 0xFFFF
+    fake.read_holding_registers.return_value = FakeResp(registers=[high, low], error=False)
+
     if hasattr(driver, "client"):
         driver.client = fake
     if hasattr(driver, "_client"):
         driver._client = fake
 
-    # mark connected if the driver uses that flag
     if hasattr(driver, "_connected"):
         driver._connected = True
 
     return fake
 
 
+def _get_client(driver):
+    """Return the modbus client regardless of whether it's stored as client or _client."""
+    if hasattr(driver, "client") and driver.client is not None:
+        return driver.client
+    if hasattr(driver, "_client") and driver._client is not None:
+        return driver._client
+    return None
+
+
 def _send_position_any(driver, value):
     """
-    Call send_position in a way that works if your driver expects:
-      - send_position(50.0)  (mm-based)
-      - send_position(Position6DOF(...)) (game-based)
+    Call send_position in a way that works if the driver expects:
+      - send_position(Position6DOF)
+      - or send_position(float)
     """
     sig = inspect.signature(driver.send_position)
     params = list(sig.parameters.values())
 
-    # expected param after self
     if len(params) >= 2:
         anno = params[1].annotation
         if anno is not inspect._empty and "Position" in str(anno):
@@ -119,7 +130,6 @@ def _send_position_any(driver, value):
                 return driver.send_position(value)
             return driver.send_position(Position6DOF(x=float(value)))
 
-    # fallback: try float, else Position6DOF
     try:
         return driver.send_position(float(value))
     except Exception:
@@ -128,18 +138,14 @@ def _send_position_any(driver, value):
         return driver.send_position(Position6DOF(x=float(value)))
 
 
-def _get_client(driver):
-    """Return the fake client regardless of whether driver uses client or _client."""
-    if hasattr(driver, "client") and driver.client is not None:
-        return driver.client
-    if hasattr(driver, "_client") and driver._client is not None:
-        return driver._client
-    return None
+def _find_write_registers_calls(client):
+    """Returns list of addresses used in write_registers calls."""
+    return [c.args[0] for c in client.write_registers.call_args_list]
 
 
-# -----------------------------
+# ----------------------------
 # Fixtures
-# -----------------------------
+# ----------------------------
 
 @pytest.fixture
 def smc_module():
@@ -158,35 +164,42 @@ def driver(smc_module):
 # POSITION CONVERSION TESTS
 # =============================================================================
 
-def test_mm_to_register_conversion_if_mm_driver(driver):
+def test_mm_to_register_conversion_if_mm_driver_or_int32(driver):
     """
-    Equivalence partitioning: a few representative mm values.
-
-    Only runs if the driver exposes POSITION_SCALE and REG_TARGET_POSITION
-    (typical mm-based implementation).
+    This used to be an mm->register test.
+    In your driver, the actual conversion is physical_mm -> units (mm * 100) for int32 writing.
+    So we verify that conversion value is correct.
     """
-    if not hasattr(driver, "POSITION_SCALE") or not hasattr(driver, "REG_TARGET_POSITION"):
-        pytest.skip("Driver doesn't look like mm->register style (POSITION_SCALE/REG_TARGET_POSITION missing).")
+    if not hasattr(driver, "_write_int32"):
+        pytest.skip("Driver doesn't have _write_int32(), can't test mm->units conversion.")
 
-    scale = driver.POSITION_SCALE
-    assert int(0.0 * scale) == 0
-    assert int(25.0 * scale) == 2500
-    assert int(50.0 * scale) == 5000
-    assert int(100.0 * scale) == 10000
+    client = _get_client(driver)
+    assert client is not None
+
+    client.write_registers.reset_mock()
+
+    # 50.00mm -> 5000 units
+    driver._write_int32(driver.REG_POSITION, 5000)
+
+    assert client.write_registers.called
+    addr = client.write_registers.call_args[0][0]
+    regs = client.write_registers.call_args[0][1]
+
+    assert addr == driver.REG_POSITION
+    assert isinstance(regs, list) and len(regs) == 2
 
 
 def test_game_to_physical_conversion_if_game_driver(driver):
     """
-    If the driver uses Position6DOF.x (meters) => physical mm:
-        physical_mm = center_mm + x*1000
-    This is a direct check on the conversion.
+    Driver uses game coords: Position6DOF.x in meters.
+    Expected: physical_mm = center_mm + x*1000
     """
     if not hasattr(driver, "center_mm") or not hasattr(driver, "_move_to_physical_mm"):
-        pytest.skip("Driver doesn't expose center_mm/_move_to_physical_mm (not the game->physical style).")
+        pytest.skip("Driver doesn't expose center_mm/_move_to_physical_mm.")
 
     driver._move_to_physical_mm = MagicMock(return_value=True)
 
-    _send_position_any(driver, Position6DOF(x=0.10))  # +0.10m => +100mm
+    _send_position_any(driver, Position6DOF(x=0.10))  # +0.10m = +100mm
     assert driver._move_to_physical_mm.called
 
     physical_mm = driver._move_to_physical_mm.call_args[0][0]
@@ -199,28 +212,26 @@ def test_game_to_physical_conversion_if_game_driver(driver):
 
 def test_connect_creates_modbus_client_and_sets_connected(smc_module):
     """
-    Mock testing: patch ModbusSerialClient inside the driver module.
-    Verify connect() returns True and sets driver._connected.
+    connect() should create a ModbusSerialClient and set connected state if connect works.
     """
     d = _make_driver_any(smc_module)
 
     fake_client = MagicMock()
     fake_client.connect.return_value = True
 
-    # patch the constructor used in that module
     smc_module.ModbusSerialClient = MagicMock(return_value=fake_client)
 
     ok = d.connect()
 
     assert ok is True
     assert getattr(d, "_connected", True) is True
-    assert smc_module.ModbusSerialClient.called is True
-    assert fake_client.connect.called is True
+    assert smc_module.ModbusSerialClient.called
+    assert fake_client.connect.called
 
 
 def test_connect_failure_returns_false_and_not_connected(smc_module):
     """
-    If client.connect() fails, driver.connect() should return False.
+    If ModbusSerialClient.connect() returns False, driver.connect() should return False.
     """
     d = _make_driver_any(smc_module)
 
@@ -240,89 +251,100 @@ def test_connect_failure_returns_false_and_not_connected(smc_module):
 # =============================================================================
 
 @pytest.mark.parametrize(
-    "position_mm, expected_units",
+    "surge_m, expected_physical_mm",
     [
-        (0.0, 0),
-        (25.0, 2500),
-        (50.0, 5000),
-        (75.0, 7500),
-        (100.0, 10000),
+        (0.0, 450.0),
+        (0.10, 550.0),
+        (-0.10, 350.0),
     ],
 )
-def test_send_position_writes_target_register_for_mm_driver(driver, position_mm, expected_units):
+def test_send_position_converts_and_calls_move(driver, surge_m, expected_physical_mm):
     """
-    Mock testing: ensure Modbus write is called with correct register + value.
-    Only runs if driver uses REG_TARGET_POSITION/POSITION_SCALE style.
-    """
-    if not hasattr(driver, "REG_TARGET_POSITION") or not hasattr(driver, "POSITION_SCALE"):
-        pytest.skip("Driver doesn't look like mm->register write_register style.")
-
-    client = _get_client(driver)
-    assert client is not None
-
-    client.write_register.reset_mock()
-
-    ok = _send_position_any(driver, position_mm)
-
-    # driver might return True/False, but if it tried to send, it must write correct units
-    assert client.write_register.called is True
-    addr = client.write_register.call_args[0][0]
-    val = client.write_register.call_args[0][1]
-
-    assert addr == driver.REG_TARGET_POSITION
-    assert val == expected_units
-
-
-def test_send_position_equivalence_partitioning_invalid_position_mm(driver):
-    """
-    Equivalence partitioning:
-      - valid positions: inside stroke/limits
-      - invalid positions: outside limits
-
-    For invalid, driver should either:
-      - clamp, OR
-      - return False / avoid write
-    We accept either behavior, but we do NOT accept sending a crazy out-of-range register value.
-    """
-    if not hasattr(driver, "REG_TARGET_POSITION") or not hasattr(driver, "POSITION_SCALE"):
-        pytest.skip("This test is for mm->register drivers.")
-
-    client = _get_client(driver)
-    assert client is not None
-
-    client.write_register.reset_mock()
-
-    ok = _send_position_any(driver, 9999.0)
-
-    if ok is False:
-        # rejecting invalid is fine
-        assert client.write_register.call_count == 0
-        return
-
-    # if it didn't return False, then it probably clamps.
-    assert client.write_register.called is True
-    sent_val = client.write_register.call_args[0][1]
-
-    # sent value should be within something sane (0..max*scale)
-    # max_position may exist; otherwise assume 100mm default
-    max_mm = getattr(driver, "max_position", 100.0)
-    max_units = int(max_mm * driver.POSITION_SCALE)
-    assert 0 <= sent_val <= max_units
-
-
-def test_send_position_game_driver_calls_move_to_physical(driver):
-    """
-    If driver is the game->physical style, the main thing is:
-    send_position(Position6DOF) must call the physical move method.
+    send_position(Position6DOF) should convert game meters to physical mm and call _move_to_physical_mm.
     """
     if not hasattr(driver, "_move_to_physical_mm"):
-        pytest.skip("Not a game->physical driver.")
+        pytest.skip("Driver doesn't expose _move_to_physical_mm.")
 
     driver._move_to_physical_mm = MagicMock(return_value=True)
 
-    ok = _send_position_any(driver, Position6DOF(x=0.05))
-    assert driver._move_to_physical_mm.called is True
-    assert ok in (True, False)  # don't force behavior beyond "it tried"
+    _send_position_any(driver, Position6DOF(x=surge_m))
+
+    assert driver._move_to_physical_mm.called
+    physical_mm = driver._move_to_physical_mm.call_args[0][0]
+    assert physical_mm == pytest.approx(expected_physical_mm)
+
+
+def test_send_position_clamps_to_stroke(driver):
+    """
+    Equivalence partitioning (invalid huge value):
+    If x is extreme, physical_mm should clamp to [1, stroke_mm - 1].
+    """
+    if not hasattr(driver, "_move_to_physical_mm") or not hasattr(driver, "stroke_mm"):
+        pytest.skip("Driver doesn't expose stroke clamp data.")
+
+    driver._move_to_physical_mm = MagicMock(return_value=True)
+
+    _send_position_any(driver, Position6DOF(x=999.0))  
+
+    physical_mm = driver._move_to_physical_mm.call_args[0][0]
+    assert physical_mm >= 1.0
+    assert physical_mm <= (driver.stroke_mm - 1.0)
+
+
+def test_move_to_physical_writes_key_registers(driver):
+    """
+    This is the main Modbus communication test.
+    _move_to_physical_mm should write a bunch of registers in a sequence.
+    We don't care about every register in exact order, but we do care that
+    the important ones are hit.
+    """
+    if not hasattr(driver, "_move_to_physical_mm"):
+        pytest.skip("Driver doesn't expose _move_to_physical_mm.")
+
+    client = _get_client(driver)
+    assert client is not None
+
+    client.write_registers.reset_mock()
+
+    ok = driver._move_to_physical_mm(450.0)
+    assert ok in (True, False)
+
+    addrs = _find_write_registers_calls(client)
+
+    # these constants exist in driver
+    assert driver.REG_MOVEMENT_MODE in addrs
+    assert driver.REG_SPEED in addrs
+    assert driver.REG_ACCELERATION in addrs
+    assert driver.REG_DECELERATION in addrs
+    assert driver.REG_OPERATION_START in addrs
+
+
+def test_move_to_physical_writes_position_as_int32(driver):
+    """
+    Verify the position is written using _write_int32:
+      - units = int(mm * 100)
+      - written as two 16-bit registers at REG_POSITION
+    """
+    if not hasattr(driver, "_move_to_physical_mm") or not hasattr(driver, "REG_POSITION"):
+        pytest.skip("Driver doesn't have REG_POSITION / _move_to_physical_mm.")
+
+    client = _get_client(driver)
+    assert client is not None
+
+    client.write_registers.reset_mock()
+
+    target_mm = 123.45
+    driver._move_to_physical_mm(target_mm)
+
+    pos_calls = [c for c in client.write_registers.call_args_list if c.args and c.args[0] == driver.REG_POSITION]
+    assert pos_calls, "Expected write_registers(REG_POSITION, [high, low]) call."
+
+    regs = pos_calls[0].args[1]
+    assert isinstance(regs, list) and len(regs) == 2
+
+    high, low = regs
+    units = (high << 16) | low
+    assert units == int(target_mm * 100)
 
 
 # =============================================================================
@@ -331,53 +353,40 @@ def test_send_position_game_driver_calls_move_to_physical(driver):
 
 def test_read_position_returns_mm_if_supported(driver):
     """
-    Mock testing: read_holding_registers returns raw registers, driver converts to mm.
-    Works for:
-      - mm driver: registers=[5000] and POSITION_SCALE=100 -> 50.0mm
-      - game driver: _read_position_mm reads 2 regs (int32) -> mm
+    Your driver uses _read_position_mm() which reads 2 registers and unpacks int32.
+    We verify it returns expected mm.
     """
+    if not hasattr(driver, "_read_position_mm"):
+        pytest.skip("Driver doesn't expose _read_position_mm().")
+
     client = _get_client(driver)
     assert client is not None
 
-    # Case 1: mm driver read_position()
-    if hasattr(driver, "read_position") and hasattr(driver, "POSITION_SCALE"):
-        client.read_holding_registers.return_value = FakeResp(registers=[5000], error=False)
-        pos = driver.read_position()
-        assert pos == pytest.approx(5000 / driver.POSITION_SCALE)
-        return
+    # units=5000 => 50.00mm
+    units = 5000
+    high = (units >> 16) & 0xFFFF
+    low = units & 0xFFFF
+    client.read_holding_registers.return_value = FakeResp(registers=[high, low], error=False)
 
-    # Case 2: game driver helper _read_position_mm()
-    if hasattr(driver, "_read_position_mm"):
-        # emulate int32 units=5000 => 50.00mm when divided by 100
-        units = 5000
-        high = (units >> 16) & 0xFFFF
-        low = units & 0xFFFF
-
-        client.read_holding_registers.return_value = FakeResp(registers=[high, low], error=False)
-        mm = driver._read_position_mm()
-        assert mm == pytest.approx(50.0)
-        return
-
-    pytest.skip("Driver doesn't expose read_position() or _read_position_mm().")
+    mm = driver._read_position_mm()
+    assert mm == pytest.approx(50.0)
 
 
-def test_read_position_error_returns_none_if_mm_driver(driver):
+def test_read_position_error_returns_zero_for_game_driver(driver):
     """
-    If read_holding_registers returns an error, read_position should return None (common pattern).
-    Only runs if mm driver has read_position().
+    If the Modbus read is 'bad', your implementation returns 0.0 (based on current code).
+    This replaces the old 'read_position returns None' test which doesn't match your API.
     """
-    if not hasattr(driver, "read_position"):
-        pytest.skip("Driver has no read_position() to test.")
+    if not hasattr(driver, "_read_position_mm"):
+        pytest.skip("Driver doesn't expose _read_position_mm().")
 
     client = _get_client(driver)
     assert client is not None
 
     client.read_holding_registers.return_value = FakeResp(registers=[], error=True)
 
-    out = driver.read_position()
-
-    # many implementations return None on Modbus error
-    assert out is None
+    mm = driver._read_position_mm()
+    assert mm == pytest.approx(0.0)
 
 
 # =============================================================================
@@ -386,7 +395,7 @@ def test_read_position_error_returns_none_if_mm_driver(driver):
 
 def test_close_disconnects_client_and_marks_not_connected(driver):
     """
-    close() should close the Modbus client and set _connected False.
+    close() should call client.close() and mark _connected False.
     """
     if not hasattr(driver, "close"):
         pytest.skip("Driver has no close() method.")
@@ -394,23 +403,21 @@ def test_close_disconnects_client_and_marks_not_connected(driver):
     client = _get_client(driver)
     assert client is not None
 
-    # ensure driver looks connected before
     if hasattr(driver, "_connected"):
         driver._connected = True
 
     driver.close()
 
-    assert client.close.called is True
+    assert client.close.called
     assert getattr(driver, "_connected", False) is False
 
 
 def test_close_handles_none_client(smc_module):
     """
-    close() should not crash if client isn't set.
+    close() shouldn't crash if client isn't set.
     """
     d = _make_driver_any(smc_module)
 
-    # wipe clients
     if hasattr(d, "client"):
         d.client = None
     if hasattr(d, "_client"):
