@@ -54,15 +54,16 @@ motion:
   # Higher = more smoothing (slower response, less jitter)
   # Lower = faster response (more responsive, but noisier)
   # 0.0 = no smoothing (raw telemetry values)
-  # Recommended: 0.2 - 0.5
-  smoothing: 0.3
+  # Recommended: 0.3 - 0.6 for stable motion
+  smoothing: 0.5
 
   # -------------------------------------------------------------------------
   # Deadband
   # -------------------------------------------------------------------------
   # Ignore G-forces smaller than this value
-  # Helps reduce noise when car is stationary
-  deadband: 0.02
+  # Helps reduce noise/oscillation when car is stationary
+  # Increase if actuator oscillates when car is still
+  deadband: 0.1
 
   # -------------------------------------------------------------------------
   # Actuator Limits

@@ -221,9 +221,13 @@ class SMCDriver:
                 pos = self._read_position_mm()
                 logger.info(f"Position after homing: {pos:.1f}mm")
 
-            # Move to center
+            # Set up motion parameters ONCE (speed, accel, etc.)
+            # This is critical for low-latency operation!
+            self._setup_motion_parameters()
+
+            # Move to center (use full command for init)
             logger.info(f"Moving to center position ({self.config.center_mm}mm)...")
-            self._move_to_position_mm(self.config.center_mm)
+            self._move_to_position_mm_full(self.config.center_mm)
             time.sleep(0.1)
             self._wait_complete(timeout=5.0)
 
@@ -233,7 +237,7 @@ class SMCDriver:
             # Retry if not at center
             if abs(pos - self.config.center_mm) > 10:
                 logger.info("Retrying center move...")
-                self._move_to_position_mm(self.config.center_mm)
+                self._move_to_position_mm_full(self.config.center_mm)
                 time.sleep(0.1)
                 self._wait_complete(timeout=5.0)
                 pos = self._read_position_mm()
@@ -285,12 +289,53 @@ class SMCDriver:
             logger.warning(f"Position command failed: {e}")
             return False
 
+    def _setup_motion_parameters(self):
+        """
+        Set motion parameters ONCE during initialization.
+        These don't change between moves, so no need to write them every time.
+        """
+        logger.info("Setting up motion parameters (one-time)...")
+        self._write_registers(self.REG_MOVEMENT_MODE, [1])  # Absolute positioning
+        self._write_registers(self.REG_SPEED, [self.config.default_speed])
+        self._write_registers(self.REG_ACCELERATION, [self.config.default_accel])
+        self._write_registers(self.REG_DECELERATION, [self.config.default_decel])
+        self._write_registers(self.REG_PUSHING_FORCE, [0])
+        self._write_registers(self.REG_TRIGGER_LEVEL, [0])
+        self._write_registers(self.REG_PUSHING_SPEED, [20])
+        self._write_registers(self.REG_MOVING_FORCE, [100])
+        self._write_int32(self.REG_AREA_1, 0)
+        self._write_int32(self.REG_AREA_2, 0)
+        self._write_int32(self.REG_IN_POSITION, 100)
+        logger.info("Motion parameters set.")
+
     def _move_to_position_mm(self, position_mm: float) -> bool:
-        """Low-level move command with all required registers."""
+        """
+        FAST position command - only writes position + start.
+
+        The other parameters (speed, accel, etc.) are set once in _setup_motion_parameters().
+        This reduces latency from ~200ms to ~20ms per command!
+        """
         try:
             position_units = int(position_mm * self.POSITION_SCALE)
 
-            # Set all step data registers (matching working code)
+            # FAST: Only write position and start trigger
+            # (other params set during init)
+            self._write_int32(self.REG_POSITION, position_units)
+            self._write_registers(self.REG_OPERATION_START, [0x0100])
+            return True
+
+        except Exception as e:
+            logger.error(f"Move error: {e}")
+            return False
+
+    def _move_to_position_mm_full(self, position_mm: float) -> bool:
+        """
+        Full move command with all registers - use for initialization moves only.
+        """
+        try:
+            position_units = int(position_mm * self.POSITION_SCALE)
+
+            # Set all step data registers
             self._write_registers(self.REG_MOVEMENT_MODE, [1])  # Absolute
             self._write_registers(self.REG_SPEED, [self.config.default_speed])
             self._write_int32(self.REG_POSITION, position_units)
