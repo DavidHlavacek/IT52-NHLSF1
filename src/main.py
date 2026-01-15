@@ -59,7 +59,7 @@ class F1MotionSimulator:
         if self.hardware_type == "smc":
             self.driver = SMCDriver(config=self.config["hardware"]["smc"])
             self._current_position = 450.0  # SMC center position
-            self._last_update_time = time.perf_counter()
+            self._last_update_time = None  # Will be set on first packet
         elif self.hardware_type == "moog":
             self.driver = MOOGDriver(config=self.config["hardware"]["moog"])
             self._current_position = None  # MOOG doesn't need speed limiting
@@ -98,21 +98,32 @@ class F1MotionSimulator:
 
                 # Step 4: Apply safety limits
                 if self.hardware_type == "smc":
-                    # Clamp SMC position
-                    safe_position = self.safety.clamp_smc_position(positions)
-                    # Apply speed limiting
+                    # Extract surge position and convert to mm
+                    surge_m = positions.x
+                    surge_mm = surge_m * 1000.0
+
+                    # Clamp SMC position (mm)
+                    safe_surge_mm = self.safety.clamp_smc_position(surge_mm)
+
+                    # Apply speed limiting (skip on first iteration)
                     current_time = time.perf_counter()
-                    dt = current_time - self._last_update_time
-                    safe_position = self.safety.limit_speed(self._current_position, safe_position, dt)
-                    self._current_position = safe_position
+                    if self._last_update_time is not None:
+                        dt = current_time - self._last_update_time
+                        safe_surge_mm = self.safety.limit_speed(self._current_position, safe_surge_mm, dt)
+
+                    self._current_position = safe_surge_mm
                     self._last_update_time = current_time
-                    positions = safe_position
+
+                    # Convert back to meters and update Position6DOF
+                    positions.x = safe_surge_mm / 1000.0
+
                 elif self.hardware_type == "moog":
                     # Clamp MOOG 6-DOF position
                     positions = self.safety.clamp_moog_position(positions)
 
-                # Step 5: Send to hardware
-                self.driver.send_position(positions)
+                # Step 5: Send to hardware (double-check e-stop before sending)
+                if not self.safety.is_estopped():
+                    self.driver.send_position(positions)
 
                 latency_ms = (time.perf_counter() - start_time) * 1000
                 self._record_latency(latency_ms)

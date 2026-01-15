@@ -336,7 +336,8 @@ class SafetyModule:
             Adjusted target position respecting speed limit
         """
         if dt <= 0:
-            return target_mm
+            # If dt is zero or negative (clock skew), maintain current position
+            return current_mm
 
         max_change = self.SMC_MAX_SPEED_MM_S * dt
         actual_change = target_mm - current_mm
