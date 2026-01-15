@@ -1,40 +1,57 @@
 """
 F1 Motion Simulator - Main Entry Point
 
-NOTE: This skeleton is a STARTING POINT. Feel free to completely rewrite
-this file if you have a better approach. Just keep the core responsibility:
-orchestrate the pipeline (UDP → Parse → Algorithm → Hardware).
+Complete pipeline orchestration for single-axis motion simulation.
 
-INF-110: Integrate Telemetry with Motion Algorithm
+Pipeline:
+    F1 2024 (Xbox) → UDP Listener → Packet Parser → Motion Algorithm → SMC Driver → Actuator
 
-This is the main application that ties together:
-- F1 UDP Telemetry reception (INF-100)
-- Packet parsing (INF-103)
-- Motion algorithm (INF-107)
-- Hardware drivers: SMC (INF-105) / MOOG (INF-108)
+Startup Sequence:
+    1. Load configuration
+    2. Connect to SMC controller
+    3. Perform homing sequence
+    4. Move actuator to center position
+    5. Wait for stabilization
+    6. Begin accepting game telemetry
+    7. Indicate ready state
 
-Acceptance Criteria for INF-110:
-    ☐ Telemetry listener calls motion algorithm on each packet
-    ☐ Motion algorithm outputs position commands
-    ☐ Commands sent to hardware driver
-    ☐ Full pipeline tested end-to-end
-    ☐ Latency measured and acceptable (<50ms)
+Features:
+    - Dimension selection via CLI or config (surge/sway/heave/pitch/roll)
+    - Rate-limited actuator commands (30Hz)
+    - Latency tracking (<1ms processing target)
+    - Graceful shutdown with return to center
+    - Comprehensive logging and statistics
 
 Usage:
-    python -m src.main --hardware smc
-    python -m src.main --hardware moog
+    # Default (surge mode)
+    python -m src.main
+
+    # With dimension selection
+    python -m src.main --dimension surge
+    python -m src.main --dimension sway
+    python -m src.main --dimension heave
+
+    # Dry run (no hardware)
+    python -m src.main --dry-run
 """
 
 import argparse
 import logging
-import time  # Added for latency measurement
+import signal
+import sys
+import time
 from typing import Optional
+from dataclasses import dataclass
 
 from src.telemetry.udp_listener import UDPListener
 from src.telemetry.packet_parser import PacketParser
-from src.motion.algorithm import MotionAlgorithm
+from src.motion.algorithm import (
+    MotionAlgorithm,
+    MotionConfig,
+    MotionDimension,
+    create_motion_config_from_dict
+)
 from src.drivers.smc_driver import SMCDriver
-from src.drivers.moog_driver import MOOGDriver
 from src.utils.config import load_config
 
 # Configure logging
@@ -45,164 +62,337 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class PipelineStats:
+    """Statistics for the motion pipeline."""
+    packets_received: int = 0
+    motion_packets_processed: int = 0
+    commands_sent: int = 0
+    total_latency_us: float = 0.0
+    max_latency_us: float = 0.0
+    min_latency_us: float = float('inf')
+    start_time: float = 0.0
+
+    @property
+    def avg_latency_us(self) -> float:
+        if self.motion_packets_processed == 0:
+            return 0.0
+        return self.total_latency_us / self.motion_packets_processed
+
+    @property
+    def runtime_seconds(self) -> float:
+        if self.start_time == 0:
+            return 0.0
+        return time.time() - self.start_time
+
+    def update_latency(self, latency_us: float):
+        """Update latency statistics."""
+        self.total_latency_us += latency_us
+        self.max_latency_us = max(self.max_latency_us, latency_us)
+        self.min_latency_us = min(self.min_latency_us, latency_us)
+
+
 class F1MotionSimulator:
     """
     Main application class that orchestrates all components.
-    
-    INF-110: This class implements the integration between
-    telemetry reception and motion output.
-    
+
     Flow:
-        F1 Game → UDP Listener → Packet Parser → Motion Algorithm → Hardware Driver
+        F1 Game → UDP Listener → Packet Parser → Motion Algorithm → SMC Driver
+
+    The pipeline runs at the rate telemetry is received (up to 60Hz) but
+    commands to the actuator are rate-limited (30Hz) to prevent oscillation.
     """
-    
-    def __init__(self, hardware_type: str = "smc"):
+
+    def __init__(
+        self,
+        dimension: str = "surge",
+        dry_run: bool = False,
+        config_path: Optional[str] = None
+    ):
         """
         Initialize the motion simulator.
-        
+
         Args:
-            hardware_type: Either "smc" or "moog"
+            dimension: Motion dimension (surge/sway/heave/pitch/roll)
+            dry_run: If True, don't connect to hardware (simulation mode)
+            config_path: Optional path to config file
         """
-        self.config = load_config()
-        self.hardware_type = hardware_type
-        
-        # Initialize components
+        self.dimension = dimension
+        self.dry_run = dry_run
+
+        # Load configuration
+        self.config = load_config(config_path)
+
+        # Override dimension from CLI argument
+        if 'motion' not in self.config:
+            self.config['motion'] = {}
+        self.config['motion']['dimension'] = dimension
+
+        # Initialize components (created in setup())
         self.udp_listener: Optional[UDPListener] = None
         self.packet_parser: Optional[PacketParser] = None
         self.motion_algorithm: Optional[MotionAlgorithm] = None
-        self.driver = None
-        
-        # Latency tracking (INF-110)
-        self._latency_samples: list = []
-        self._max_latency_samples = 100
-        
-    def setup(self):
-        """Initialize all components."""
-        logger.info("Setting up F1 Motion Simulator...")
-        
-        # Telemetry components (INF-100, INF-103)
-        self.udp_listener = UDPListener(
-            port=self.config["telemetry"]["port"]
-        )
-        self.packet_parser = PacketParser()
-        
-        # Motion algorithm (INF-107)
-        self.motion_algorithm = MotionAlgorithm(
-            config=self.config["motion"]
-        )
-        
-        # Hardware driver (INF-105 / INF-108)
-        if self.hardware_type == "smc":
-            self.driver = SMCDriver(
-                config=self.config["hardware"]["smc"]
+        self.driver: Optional[SMCDriver] = None
+
+        # State
+        self._running = False
+        self._ready = False
+        self._stats = PipelineStats()
+
+        # Signal handling for graceful shutdown
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals gracefully."""
+        logger.info(f"Received signal {signum}, initiating shutdown...")
+        self._running = False
+
+    def setup(self) -> bool:
+        """
+        Initialize all components.
+
+        Returns:
+            True if setup successful
+        """
+        logger.info("=" * 60)
+        logger.info("F1 Motion Simulator - Setup")
+        logger.info("=" * 60)
+
+        try:
+            # 1. Initialize telemetry components
+            logger.info("Setting up telemetry receiver...")
+            telemetry_config = self.config.get('telemetry', {})
+            self.udp_listener = UDPListener(
+                port=telemetry_config.get('port', 20777),
+                timeout=0.05  # 50ms timeout for responsive shutdown
             )
-        elif self.hardware_type == "moog":
-            self.driver = MOOGDriver(
-                config=self.config["hardware"]["moog"]
-            )
-        else:
-            raise ValueError(f"Unknown hardware type: {self.hardware_type}")
-        
-        logger.info(f"Setup complete. Using {self.hardware_type.upper()} hardware.")
-        
+            self.packet_parser = PacketParser()
+            logger.info(f"  UDP listener on port {telemetry_config.get('port', 20777)}")
+
+            # 2. Initialize motion algorithm
+            logger.info("Setting up motion algorithm...")
+            motion_config = create_motion_config_from_dict(self.config.get('motion', {}))
+            self.motion_algorithm = MotionAlgorithm(motion_config)
+            logger.info(f"  Dimension: {motion_config.dimension.value}")
+            logger.info(f"  Gain: {motion_config.gain} mm/G")
+            logger.info(f"  Washout cutoff: {motion_config.highpass_cutoff_hz} Hz")
+
+            # 3. Initialize hardware driver (unless dry run)
+            if not self.dry_run:
+                logger.info("Setting up SMC driver...")
+                smc_config = self.config.get('hardware', {}).get('smc', {})
+                self.driver = SMCDriver(config=smc_config)
+
+                if not self.driver.connect():
+                    logger.error("Failed to connect to SMC controller")
+                    return False
+
+                logger.info("Initializing actuator (homing + center)...")
+                if not self.driver.initialize(home_first=True):
+                    logger.error("Failed to initialize actuator")
+                    return False
+
+                logger.info("Actuator ready at center position")
+            else:
+                logger.info("DRY RUN MODE - No hardware connection")
+
+            self._ready = True
+            logger.info("=" * 60)
+            logger.info("Setup complete. Ready to receive telemetry.")
+            logger.info("=" * 60)
+            return True
+
+        except Exception as e:
+            logger.error(f"Setup failed: {e}")
+            return False
+
     def run(self):
         """
         Main loop: receive telemetry → process → send to hardware.
-        
-        INF-110: This is the core integration point.
-        
-        TODO [INF-110]: 
-            - Measure and log latency
-            - Verify latency < 50ms
-            - Add performance monitoring
+
+        Processing target: <1ms latency
         """
-        logger.info("Starting main loop...")
-        
+        if not self._ready:
+            logger.error("Setup not complete. Call setup() first.")
+            return
+
+        logger.info("\nStarting main loop...")
+        logger.info("Waiting for F1 telemetry on port 20777...")
+        logger.info("Press Ctrl+C to stop\n")
+
+        self._running = True
+        self._stats.start_time = time.time()
+
         try:
-            while True:
-                # Start latency measurement (INF-110)
-                start_time = time.perf_counter()
-                
-                # Step 1: Receive UDP packet (INF-100)
+            while self._running:
+                # Start latency measurement
+                loop_start = time.perf_counter()
+
+                # Step 1: Receive UDP packet
                 raw_packet = self.udp_listener.receive()
-                
+
                 if raw_packet is None:
                     continue
-                
-                # Step 2: Parse the packet (INF-103)
-                telemetry_data = self.packet_parser.parse_motion_packet(raw_packet)
-                
-                if telemetry_data is None:
-                    continue
-                
-                # Step 3: Calculate actuator positions (INF-107)
-                positions = self.motion_algorithm.calculate(telemetry_data)
-                
-                # Step 4: Send to hardware (INF-105 / INF-108)
-                self.driver.send_position(positions)
-                
-                # End latency measurement (INF-110)
-                end_time = time.perf_counter()
-                latency_ms = (end_time - start_time) * 1000
-                self._record_latency(latency_ms)
-                
-        except KeyboardInterrupt:
-            logger.info("Shutting down...")
-            self._log_latency_stats()
+
+                self._stats.packets_received += 1
+
+                # Step 2: Parse the packet
+                telemetry = self.packet_parser.parse_motion_packet(raw_packet)
+
+                if telemetry is None:
+                    continue  # Not a motion packet or invalid
+
+                # Step 3: Calculate actuator position
+                target_position = self.motion_algorithm.calculate(telemetry)
+
+                # Step 4: Send to hardware (or log in dry run)
+                if not self.dry_run and self.driver:
+                    self.driver.send_position(target_position)
+                    self._stats.commands_sent += 1
+
+                # End latency measurement
+                loop_end = time.perf_counter()
+                latency_us = (loop_end - loop_start) * 1_000_000
+
+                self._stats.motion_packets_processed += 1
+                self._stats.update_latency(latency_us)
+
+                # Periodic logging (every ~10 seconds at 60Hz)
+                if self._stats.motion_packets_processed % 600 == 0:
+                    self._log_stats()
+
+        except Exception as e:
+            logger.error(f"Error in main loop: {e}")
+
+        finally:
+            self._log_final_stats()
             self.cleanup()
-    
-    def _record_latency(self, latency_ms: float):
-        """
-        Record latency sample for monitoring (INF-110).
-        
-        TODO [INF-110]: Implement this method
-        
-        Args:
-            latency_ms: Processing latency in milliseconds
-            
-        Steps:
-            1. Append to _latency_samples
-            2. Keep only last _max_latency_samples
-            3. Log warning if latency > 50ms
-        """
-        # TODO: Implement latency recording
-        pass
-    
-    def _log_latency_stats(self):
-        """
-        Log latency statistics on shutdown (INF-110).
-        
-        TODO [INF-110]: Implement this method
-        
-        Should log:
-            - Average latency
-            - Max latency
-            - % of samples > 50ms
-        """
-        # TODO: Implement latency stats logging
-        pass
-            
+
+    def _log_stats(self):
+        """Log periodic statistics."""
+        stats = self._stats
+        logger.info(
+            f"Stats: {stats.motion_packets_processed} packets, "
+            f"latency avg={stats.avg_latency_us:.1f}us "
+            f"max={stats.max_latency_us:.1f}us, "
+            f"pos={self.motion_algorithm.current_position:.1f}mm"
+        )
+
+    def _log_final_stats(self):
+        """Log final statistics on shutdown."""
+        stats = self._stats
+        logger.info("\n" + "=" * 60)
+        logger.info("Final Statistics")
+        logger.info("=" * 60)
+        logger.info(f"Runtime: {stats.runtime_seconds:.1f} seconds")
+        logger.info(f"Total packets received: {stats.packets_received}")
+        logger.info(f"Motion packets processed: {stats.motion_packets_processed}")
+        logger.info(f"Commands sent to actuator: {stats.commands_sent}")
+        logger.info(f"Processing latency:")
+        logger.info(f"  Average: {stats.avg_latency_us:.1f} us")
+        logger.info(f"  Maximum: {stats.max_latency_us:.1f} us")
+        logger.info(f"  Minimum: {stats.min_latency_us:.1f} us")
+
+        # Check latency target
+        if stats.avg_latency_us < 1000:
+            logger.info(f"  ✓ Target <1ms achieved ({stats.avg_latency_us:.1f}us < 1000us)")
+        else:
+            logger.warning(f"  ✗ Target <1ms NOT achieved ({stats.avg_latency_us:.1f}us)")
+
+        logger.info("=" * 60)
+
     def cleanup(self):
-        """Clean up resources."""
+        """Clean up resources and shutdown gracefully."""
+        logger.info("\nCleaning up...")
+
         if self.udp_listener:
             self.udp_listener.close()
-        if self.driver:
+
+        if self.driver and not self.dry_run:
+            logger.info("Returning actuator to center...")
+            self.driver.shutdown()
             self.driver.close()
+
         logger.info("Cleanup complete.")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="F1 Motion Simulator")
-    parser.add_argument(
-        "--hardware", 
-        choices=["smc", "moog"],
-        default="smc",
-        help="Hardware type to use (default: smc)"
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="F1 Motion Simulator - Single-Axis Motion Platform Control",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Dimension Options:
+  surge   - Longitudinal G-force (braking/acceleration feel)
+  sway    - Lateral G-force (cornering feel)
+  heave   - Vertical G-force (bump/kerb feel)
+  pitch   - Pitch angle from game
+  roll    - Roll angle from game
+
+Examples:
+  python -m src.main                    # Default surge mode
+  python -m src.main --dimension sway   # Cornering feel
+  python -m src.main --dry-run          # Test without hardware
+        """
     )
-    args = parser.parse_args()
-    
-    simulator = F1MotionSimulator(hardware_type=args.hardware)
-    simulator.setup()
+
+    parser.add_argument(
+        "--dimension", "-d",
+        choices=["surge", "sway", "heave", "pitch", "roll"],
+        default="surge",
+        help="Motion dimension to simulate (default: surge)"
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run without connecting to hardware (simulation mode)"
+    )
+
+    parser.add_argument(
+        "--config", "-c",
+        type=str,
+        default=None,
+        help="Path to configuration file"
+    )
+
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging"
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    """Main entry point."""
+    args = parse_args()
+
+    # Set logging level
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    print("\n" + "=" * 60)
+    print("  F1 Motion Simulator")
+    print("  Single-Axis Motion Platform Control")
+    print("=" * 60)
+    print(f"  Dimension: {args.dimension}")
+    print(f"  Dry run:   {args.dry_run}")
+    print("=" * 60 + "\n")
+
+    # Create and run simulator
+    simulator = F1MotionSimulator(
+        dimension=args.dimension,
+        dry_run=args.dry_run,
+        config_path=args.config
+    )
+
+    if not simulator.setup():
+        logger.error("Setup failed. Exiting.")
+        sys.exit(1)
+
     simulator.run()
 
 

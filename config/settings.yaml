@@ -1,62 +1,134 @@
 # F1 Motion Simulator Configuration
 # ==================================
+#
+# This file contains all tunable parameters for the motion simulator.
+# Adjust these values based on hardware testing and user preference.
+#
+# IMPORTANT: Start with conservative values and increase gradually!
 
+# =============================================================================
+# TELEMETRY SETTINGS
+# =============================================================================
 telemetry:
-  port: 20777           # F1 game default UDP port
+  port: 20777           # F1 game UDP port (don't change unless game is different)
   buffer_size: 2048     # UDP receive buffer size
 
-# Motion Algorithm Parameters
-# ---------------------------
-# ⚠️ WARNING: These are PLACEHOLDER values!
-# They MUST be tuned through physical testing in INF-111.
-# Start with SMALL values and increase gradually to avoid violent motion!
+# =============================================================================
+# MOTION ALGORITHM SETTINGS
+# =============================================================================
+# These settings control how G-forces are translated to actuator movement.
+# The washout filter provides onset cue while returning to center.
+#
 motion:
-  # Translation scales (G-force → meters)
-  # INF-111: Tune these based on platform feel
-  surge_scale: 0.05     # Longitudinal G → X translation (braking/accel)
-  sway_scale: 0.05      # Lateral G → Y translation (cornering)
-  heave_scale: 0.03     # Vertical G → Z translation (bumps)
-  
-  # Rotation scales (G-force → radians)
-  # INF-111: Tune these based on platform feel
-  roll_scale: 0.3       # Lateral G → Roll rotation (lean into corners)
-  pitch_scale: 0.3      # Longitudinal G → Pitch rotation (brake dive)
-  yaw_scale: 0.1        # Yaw passthrough scale (usually minimal)
-  
-  # Safety limits
-  # INF-111: Adjust based on platform capabilities
-  max_translation: 0.1  # Max X/Y movement in meters
-  max_rotation: 0.26    # Max rotation in radians (~15 degrees)
-  
-  # Smoothing (exponential moving average)
-  # INF-111: Higher = smoother but more lag, lower = responsive but jerky
-  smoothing_factor: 0.3 # 0.0 = no smoothing, 1.0 = maximum smoothing
-  
-  # MOOG home position
-  home_z: -0.18         # Z position at rest (meters)
+  # -------------------------------------------------------------------------
+  # Dimension Selection
+  # -------------------------------------------------------------------------
+  # Which telemetry input drives the actuator:
+  #   surge  - Longitudinal G-force (braking/acceleration) [RECOMMENDED]
+  #   sway   - Lateral G-force (cornering)
+  #   heave  - Vertical G-force (bumps/kerbs)
+  #   pitch  - Pitch angle from game
+  #   roll   - Roll angle from game
+  dimension: surge
 
-# Hardware Configuration
-# ----------------------
+  # -------------------------------------------------------------------------
+  # Washout Filter Settings
+  # -------------------------------------------------------------------------
+  # High-pass filter cutoff frequency (Hz)
+  # Lower = more sustained feel but risk hitting limits
+  # Higher = quicker return to center, more responsive
+  # Recommended range: 0.5 - 2.0 Hz
+  highpass_cutoff_hz: 1.0
+
+  # -------------------------------------------------------------------------
+  # Gain Settings
+  # -------------------------------------------------------------------------
+  # How much the actuator moves per unit of input
+  # For G-forces: mm per G (e.g., 100 = 1G causes 100mm movement)
+  # For angles: mm per radian
+  # START LOW and increase gradually!
+  gain: 100.0
+
+  # -------------------------------------------------------------------------
+  # Anti-Oscillation Settings
+  # -------------------------------------------------------------------------
+  # Deadband: Ignore input changes smaller than this value
+  # Units: G (for G-forces) or radians (for angles)
+  # Higher = less responsive but more stable
+  deadband: 0.05
+
+  # Slew rate limit: Maximum position change per second (mm/s)
+  # Prevents jerky motion and reduces oscillation
+  # Lower = smoother but slower response
+  slew_rate_limit: 500.0
+
+  # -------------------------------------------------------------------------
+  # Actuator Limits
+  # -------------------------------------------------------------------------
+  stroke_mm: 900.0      # Total actuator stroke (LEL25LT-900)
+  center_mm: 450.0      # Center/home position
+  soft_limit_mm: 50.0   # Safety margin from each end
+
+  # -------------------------------------------------------------------------
+  # Processing Rate
+  # -------------------------------------------------------------------------
+  # Motion algorithm update rate (Hz)
+  # Should match command_rate_hz in hardware settings
+  update_rate_hz: 30.0
+
+# =============================================================================
+# HARDWARE SETTINGS
+# =============================================================================
 hardware:
+  # ---------------------------------------------------------------------------
+  # SMC LECP6P Controller Settings
+  # ---------------------------------------------------------------------------
   smc:
-    port: "/dev/ttyUSB0"  # Linux: /dev/ttyUSB0, Windows: COM3
-    baudrate: 38400       # Fixed by SMC protocol
-    parity: "E"           # Even parity
-    controller_id: 1      # Modbus slave ID
-    stroke_mm: 100.0      # Actuator stroke length
-    
-  moog:
-    # ⚠️ PLACEHOLDER VALUES - Must be discovered in INF-106!
-    ip: "192.168.1.100"   # MOOG platform IP address
-    port: 6000            # MOOG UDP port
-    send_rate_hz: 60.0    # Command send rate (match F1 telemetry)
+    # Serial connection
+    port: "/dev/ttyUSB0"    # Linux: /dev/ttyUSB0, Windows: COM3
+    baudrate: 38400         # Fixed by SMC protocol
+    parity: "N"             # No parity (some controllers use "E")
+    controller_id: 1        # Modbus slave ID
 
-# INF-111: Parameter Tuning Guide
-# ===============================
-# 1. Start with all scale values at 0.01 (very small motion)
-# 2. Increase surge_scale first - test with braking
-# 3. Increase sway_scale - test with cornering
-# 4. Increase pitch_scale - enhances braking feel
-# 5. Increase roll_scale - enhances cornering feel
-# 6. Adjust smoothing_factor for comfort vs responsiveness
-# 7. Document final values for each user preference profile
+    # Actuator specifications (LEL25LT-900)
+    stroke_mm: 900.0        # Total stroke length
+    center_mm: 450.0        # Center position for operation
+    soft_limit_mm: 5.0      # Hardware safety margin from ends
+
+    # Motion profile settings
+    default_speed: 500      # Movement speed (mm/s)
+    default_accel: 3000     # Acceleration (mm/s²)
+    default_decel: 3000     # Deceleration (mm/s²)
+
+    # Command rate (CRITICAL for anti-oscillation)
+    # Do NOT exceed 30Hz - higher rates cause oscillation!
+    command_rate_hz: 30.0
+
+  # ---------------------------------------------------------------------------
+  # MOOG 6-DOF Platform Settings (Future Sprint)
+  # ---------------------------------------------------------------------------
+  moog:
+    ip: "192.168.1.100"     # Platform IP address
+    port: 6000              # UDP port
+    send_rate_hz: 60.0      # Command rate
+
+# =============================================================================
+# TUNING GUIDE
+# =============================================================================
+# 1. Start with gain = 50.0 (very conservative)
+# 2. Test with gentle braking in game
+# 3. Gradually increase gain until motion feels responsive
+# 4. If oscillation occurs:
+#    - Decrease command_rate_hz (try 20Hz)
+#    - Increase deadband (try 0.1)
+#    - Decrease slew_rate_limit (try 300)
+# 5. Adjust highpass_cutoff_hz for washout feel:
+#    - Lower (0.5Hz) = more sustained motion
+#    - Higher (2.0Hz) = quicker return to center
+# 6. Save your final tuned values!
+#
+# Known Issues and Solutions:
+# - Oscillation: Reduce command_rate_hz and/or increase deadband
+# - Random movement: Check telemetry connection, increase deadband
+# - Motion doesn't match game: Adjust gain and highpass_cutoff_hz
+# - Hits end stops: Reduce gain or increase soft_limit_mm
