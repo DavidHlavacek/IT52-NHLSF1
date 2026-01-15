@@ -235,11 +235,12 @@ class SMCDriver:
             self._write_coil(SMCCoils.INPUT_INVALID, True)
             time.sleep(0.1)
 
-            # Step 2: Reset any alarms
-            if self._is_alarm():
-                logger.info("Resetting alarm...")
-                self._reset_alarm()
-                time.sleep(0.2)
+            # Step 2: Reset alarms unconditionally (like dev branch)
+            logger.info("Resetting alarms...")
+            self._write_coil(SMCCoils.RESET, True)
+            time.sleep(0.1)
+            self._write_coil(SMCCoils.RESET, False)
+            time.sleep(0.1)
 
             # Step 3: Servo ON
             logger.info("Turning servo ON...")
@@ -250,7 +251,6 @@ class SMCDriver:
                 logger.error("Servo did not become ready (SVRE timeout)")
                 return False
             logger.info("Servo ready")
-            logger.debug(f"Status before homing: {self.read_all_status()}")
 
             # Step 4: Homing (optional)
             if home_first:
@@ -261,34 +261,10 @@ class SMCDriver:
                     logger.error("Homing did not complete (SETON timeout)")
                     return False
                 logger.info("Homing complete (SETON high)")
-                logger.debug(f"Status after SETON: {self.read_all_status()}")
 
-                # CRITICAL: Clear SETUP coil after homing!
-                logger.info("Clearing SETUP coil...")
+                # Clear SETUP coil after homing (like dev branch)
                 self._write_coil(SMCCoils.SETUP, False)
-                time.sleep(0.5)  # Give controller time to process
-                logger.debug(f"Status after clearing SETUP: {self.read_all_status()}")
-
-                # CRITICAL: Check and reset alarm AFTER homing
-                # Homing can trigger alarms that must be cleared before continuing
-                if self._is_alarm():
-                    logger.warning("Alarm detected after homing - resetting...")
-                    self._reset_alarm()
-                    time.sleep(0.3)
-
-                    # Verify alarm cleared
-                    if self._is_alarm():
-                        logger.error("Failed to clear alarm after homing")
-                        return False
-                    logger.info("Alarm cleared successfully")
-
-                # Re-verify servo is still ready after homing
-                if not self._read_input(SMCInputs.SVRE):
-                    logger.warning("Servo not ready after homing - re-enabling...")
-                    self._write_coil(SMCCoils.SVON, True)
-                    if not self._wait_for_input(SMCInputs.SVRE, True, timeout=5.0):
-                        logger.error("Servo did not become ready after homing")
-                        return False
+                time.sleep(0.3)
 
                 pos = self.read_position()
                 logger.info(f"Position after homing: {pos:.1f}mm")
