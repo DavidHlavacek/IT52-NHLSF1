@@ -169,9 +169,11 @@ class PacketParser:
     # Expected motion packet size: header + 22 cars
     MOTION_PACKET_SIZE = HEADER_SIZE + (22 * MOTION_DATA_SIZE)  # 1349 bytes
 
-    # Validation ranges
-    G_FORCE_MIN = -10.0
-    G_FORCE_MAX = 10.0
+    # G-force clamping ranges
+    # F1 crashes can produce 50G+, so we use high limits
+    # These are clamped (not rejected) to produce max motion during crashes
+    G_FORCE_MIN = -50.0
+    G_FORCE_MAX = 50.0
 
     # Pre-compile struct objects for performance
     _header_struct = struct.Struct(HEADER_FORMAT)
