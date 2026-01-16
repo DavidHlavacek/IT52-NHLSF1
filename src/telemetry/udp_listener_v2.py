@@ -26,14 +26,28 @@ class UDPListenerV2:
         print(f"[UDP] Listening on port {self.port}")
 
     def receive(self) -> bytes:
-        readable = select.select([self.socket], [], [], self.timeout)[0]
+        latest = None
 
+        # remove old packets keep only recent
+        while True:
+            readable = select.select([self.socket], [], [], 0)[0]  # non-blocking
+            if not readable:
+                break
+            try:
+                latest = self.socket.recvfrom(2048)[0]
+            except BlockingIOError:
+                break
+
+        if latest is not None:
+            return latest
+
+        # wait for the next packet
+        readable = select.select([self.socket], [], [], self.timeout)[0]
         if not readable:
             return None
 
         try:
-            data = self.socket.recvfrom(2048)[0]
-            return data
+            return self.socket.recvfrom(2048)[0]
         except BlockingIOError:
             return None
 
