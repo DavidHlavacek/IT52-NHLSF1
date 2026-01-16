@@ -17,7 +17,7 @@ class UDPListener:
     DEFAULT_PORT = 20777
     BUFFER_SIZE = 2048  # F1 24 max packet size ~1500 bytes
 
-    def __init__(self, port: int = DEFAULT_PORT, timeout: float = 1.0):
+    def __init__(self, port: int = DEFAULT_PORT, timeout: float = 0.1):
         self.port = port
         self.timeout = timeout
         self.socket: Optional[socket.socket] = None

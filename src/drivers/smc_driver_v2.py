@@ -74,7 +74,7 @@ class SMCDriverV2:
                 parity='N',
                 stopbits=1,
                 bytesize=8,
-                timeout=1.0
+                timeout=0.1
             )
 
             if not self.client.connect():
