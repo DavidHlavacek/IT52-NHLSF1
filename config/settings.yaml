@@ -42,11 +42,10 @@ motion:
   # Gain Settings
   # -------------------------------------------------------------------------
   # How much the actuator moves per G-force
-  # Example: gain=200 means 1G causes 200mm movement from center
+  # Example: gain=100 means 1G causes 100mm movement from center
   # Higher = more dramatic movement, will hit limits during hard braking/crashes
   # Lower = subtle movement, more headroom
-  # Recommended: 150-250 for immersive feel
-  gain: 200.0
+  gain: 100.0
 
   # -------------------------------------------------------------------------
   # Smoothing
