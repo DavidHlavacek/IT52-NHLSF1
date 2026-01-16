@@ -7,6 +7,7 @@ from src.telemetry.packet_parser import TelemetryData
 
 @dataclass
 class AlgorithmConfig:
+    dimension: str = "surge"      # surge, sway, heave
     scale: float = 80.0           # mm per g force
     smoothing: float = 0.5        # 0-1 no-max smoothing
     threshold: float = 0.05       # ignore g forces below
@@ -22,14 +23,14 @@ class MotionAlgorithmV2:
         self.last_g_force = 0.0
 
     def calculate(self, telemetry: TelemetryData) -> float:
-        g_force = telemetry.g_force_longitudinal
+        g_force = self._get_dimension_value(telemetry)
 
         # filter noise
         # if abs(g_force) < self.config.threshold:
         #     g_force = 0.0
 
         # ignore small changes
-        if abs(g_force - self.last_g_force) < self.config.threshold:                                                                                                                                                                                                                               
+        if abs(g_force - self.last_g_force) < self.config.threshold:
             g_force = self.last_g_force
         else:
             self.last_g_force = g_force
@@ -45,6 +46,18 @@ class MotionAlgorithmV2:
         position_mm = max(self.config.min_mm, min(self.config.max_mm, position_mm))
 
         return position_mm
+
+    def _get_dimension_value(self, telemetry: TelemetryData) -> float:
+        dim = self.config.dimension
+
+        if dim == "surge":
+            return telemetry.g_force_longitudinal
+        elif dim == "sway":
+            return telemetry.g_force_lateral
+        elif dim == "heave":
+            return telemetry.g_force_vertical - 1.0  # remove gravity
+        else:
+            return telemetry.g_force_longitudinal
 
     def reset(self):
         self.smoothed_g = 0.0
