@@ -34,6 +34,7 @@ class ListenerStats:
     errors: int = 0
     last_packet_time: float = 0.0
     avg_latency_us: float = 0.0
+    max_latency_us: float = 0.0
 
 
 class UDPListener:
@@ -155,7 +156,7 @@ class UDPListener:
                 logger.debug(
                     f"UDP stats: {self._stats.packets_received} packets, "
                     f"{self._stats.bytes_received} bytes, "
-                    f"avg latency {self._stats.avg_latency_us:.1f}us"
+                    f"latency avg={self._stats.avg_latency_us:.1f}us max={self._stats.max_latency_us:.1f}us"
                 )
 
             return data
@@ -184,13 +185,14 @@ class UDPListener:
         return None
 
     def _update_latency(self, latency_us: float):
-        """Update running average of processing latency."""
+        """Update running average and max of processing latency."""
         self._latency_samples.append(latency_us)
         if len(self._latency_samples) > self._max_latency_samples:
             self._latency_samples.pop(0)
 
         if self._latency_samples:
             self._stats.avg_latency_us = sum(self._latency_samples) / len(self._latency_samples)
+            self._stats.max_latency_us = max(self._stats.max_latency_us, latency_us)
 
     def close(self):
         """
@@ -203,7 +205,8 @@ class UDPListener:
                 self.socket.close()
                 logger.info(
                     f"UDP listener closed. Stats: "
-                    f"{self._stats.packets_received} packets received, "
+                    f"{self._stats.packets_received} packets, "
+                    f"latency avg={self._stats.avg_latency_us:.1f}us max={self._stats.max_latency_us:.1f}us, "
                     f"{self._stats.errors} errors, "
                     f"{self._stats.timeouts} timeouts"
                 )
