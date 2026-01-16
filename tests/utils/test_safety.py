@@ -14,9 +14,8 @@ Run: pytest tests/utils/test_safety.py -v
 
 import pytest
 import time
-from unittest.mock import Mock
-
-# from src.utils.safety import SafetyLimiter, SafetyConfig, EmergencyStop, SafetyState
+from src.utils.safety import SafetyModule, EmergencyStop, SafetyState
+from src.shared.types import Position6DOF
 
 
 # =============================================================================
@@ -24,29 +23,14 @@ from unittest.mock import Mock
 # =============================================================================
 
 @pytest.fixture
-def limiter():
-    """Create a SafetyLimiter instance."""
-    from src.utils.safety import SafetyLimiter
-    return SafetyLimiter()
-
-
-@pytest.fixture
-def custom_config():
-    """Create custom safety configuration."""
-    from src.utils.safety import SafetyConfig
-    return SafetyConfig(
-        min_position_smc=10.0,
-        max_position_smc=90.0,
-        max_translation=0.15,
-        max_rotation=0.25,
-        emergency_stop_timeout=1.0  # Short timeout for testing
-    )
+def safety():
+    """Create a SafetyModule instance."""
+    return SafetyModule()
 
 
 @pytest.fixture(autouse=True)
 def reset_emergency_stop():
     """Reset EmergencyStop state before each test."""
-    from src.utils.safety import EmergencyStop
     EmergencyStop._active = False
     EmergencyStop._trigger_time = None
     EmergencyStop._callbacks.clear()
@@ -58,164 +42,228 @@ def reset_emergency_stop():
 
 
 # =============================================================================
-# SMC POSITION CLAMPING TESTS
+# SMC POSITION CLAMPING TESTS - TC-SAFE-001
 # =============================================================================
 
 class TestClampSMCPosition:
     """Tests for clamp_smc_position() method."""
-    
-    def test_value_within_limits_unchanged(self, limiter):
-        """Test values within limits pass through unchanged."""
-        # result = limiter.clamp_smc_position(50.0)
-        # assert result == 50.0
-        pytest.skip("INF-112: clamp_smc_position() not yet implemented")
-    
-    def test_value_below_min_clamped(self, limiter):
-        """Test values below minimum are clamped to min."""
-        # result = limiter.clamp_smc_position(2.0)  # Below 5mm min
-        # assert result == 5.0
-        pytest.skip("INF-112: clamp_smc_position() not yet implemented")
-    
-    def test_value_above_max_clamped(self, limiter):
-        """Test values above maximum are clamped to max."""
-        # result = limiter.clamp_smc_position(98.0)  # Above 95mm max
-        # assert result == 95.0
-        pytest.skip("INF-112: clamp_smc_position() not yet implemented")
-    
+
+    def test_value_within_limits_unchanged(self, safety):
+        """TC-SAFE-001: Test values within limits pass through unchanged."""
+        result = safety.clamp_smc_position(450.0)
+        assert result == 450.0
+        assert safety.warning_count == 0
+
+    def test_value_below_min_clamped(self, safety):
+        """TC-SAFE-001: Test values below minimum are clamped to min (5mm)."""
+        result = safety.clamp_smc_position(2.0)
+        assert result == 5.0
+        assert safety.warning_count == 1
+
+    def test_value_above_max_clamped(self, safety):
+        """TC-SAFE-001: Test values above maximum are clamped to max (895mm)."""
+        result = safety.clamp_smc_position(900.0)
+        assert result == 895.0
+        assert safety.warning_count == 1
+
     @pytest.mark.parametrize("input_val,expected", [
         (0.0, 5.0),       # Below min
         (5.0, 5.0),       # At min
         (5.1, 5.1),       # Just above min
-        (50.0, 50.0),     # Center
-        (94.9, 94.9),     # Just below max
-        (95.0, 95.0),     # At max
-        (100.0, 95.0),    # Above max
+        (450.0, 450.0),   # Center
+        (894.9, 894.9),   # Just below max
+        (895.0, 895.0),   # At max
+        (1000.0, 895.0),  # Above max
         (-10.0, 5.0),     # Negative
     ])
-    def test_boundary_values(self, limiter, input_val, expected):
-        """Test boundary value clamping."""
-        # result = limiter.clamp_smc_position(input_val)
-        # assert abs(result - expected) < 0.001
-        pytest.skip("INF-112: clamp_smc_position() not yet implemented")
-    
-    def test_estop_returns_center(self, limiter):
-        """Test E-stop active returns center position."""
-        from src.utils.safety import EmergencyStop
-        EmergencyStop.trigger("Test")
-        # result = limiter.clamp_smc_position(80.0)
-        # assert result == 50.0  # Center/home position
-        pytest.skip("INF-112: clamp_smc_position() not yet implemented")
+    def test_boundary_values(self, safety, input_val, expected):
+        """TC-SAFE-001: Test boundary value clamping."""
+        result = safety.clamp_smc_position(input_val)
+        assert abs(result - expected) < 0.001
 
 
 # =============================================================================
-# MOOG POSITION CLAMPING TESTS
+# MOOG POSITION CLAMPING TESTS - TC-SAFE-002
 # =============================================================================
 
 class TestClampMOOGPosition:
     """Tests for clamp_moog_position() method."""
-    
-    def test_values_within_limits_unchanged(self, limiter):
-        """Test values within limits pass through unchanged."""
-        # result = limiter.clamp_moog_position(0.05, 0.05, -0.15, 0.1, 0.1, 0.05)
-        # assert result == (0.05, 0.05, -0.15, 0.1, 0.1, 0.05)
-        pytest.skip("INF-112: clamp_moog_position() not yet implemented")
-    
-    def test_translations_clamped(self, limiter):
-        """Test X, Y translations are clamped to ±max_translation."""
-        # result = limiter.clamp_moog_position(0.5, -0.5, -0.18, 0, 0, 0)
-        # assert abs(result[0]) <= 0.20  # X clamped
-        # assert abs(result[1]) <= 0.20  # Y clamped
-        pytest.skip("INF-112: clamp_moog_position() not yet implemented")
-    
-    def test_heave_clamped(self, limiter):
-        """Test Z (heave) is clamped to min_heave/max_heave."""
-        # result = limiter.clamp_moog_position(0, 0, 0.0, 0, 0, 0)  # Z too high
-        # assert result[2] <= -0.08  # Max heave
-        # result = limiter.clamp_moog_position(0, 0, -0.5, 0, 0, 0)  # Z too low
-        # assert result[2] >= -0.28  # Min heave
-        pytest.skip("INF-112: clamp_moog_position() not yet implemented")
-    
-    def test_rotations_clamped(self, limiter):
-        """Test roll, pitch, yaw are clamped to ±max_rotation."""
-        # result = limiter.clamp_moog_position(0, 0, -0.18, 0.5, 0.5, 0.5)
-        # assert abs(result[3]) <= 0.30  # Roll
-        # assert abs(result[4]) <= 0.30  # Pitch
-        # assert abs(result[5]) <= 0.30  # Yaw
-        pytest.skip("INF-112: clamp_moog_position() not yet implemented")
-    
-    def test_estop_returns_home(self, limiter):
-        """Test E-stop active returns home position."""
-        from src.utils.safety import EmergencyStop
-        EmergencyStop.trigger("Test")
-        # result = limiter.clamp_moog_position(0.1, 0.1, -0.1, 0.2, 0.2, 0.1)
-        # assert result == (0.0, 0.0, -0.18, 0.0, 0.0, 0.0)
-        pytest.skip("INF-112: clamp_moog_position() not yet implemented")
+
+    def test_values_within_limits_unchanged(self, safety):
+        """TC-SAFE-002: Test values within limits pass through unchanged."""
+        pos = Position6DOF(x=0.05, y=0.05, z=-0.1, roll=0.1, pitch=0.1, yaw=0.05)
+        result = safety.clamp_moog_position(pos)
+        assert result.x == 0.05
+        assert result.y == 0.05
+        assert result.z == -0.1
+        assert result.roll == 0.1
+        assert result.pitch == 0.1
+        assert result.yaw == 0.05
+        assert safety.warning_count == 0
+
+    def test_surge_clamped(self, safety):
+        """TC-SAFE-002: Test surge (x) is clamped to -0.241/+0.259."""
+        pos_low = Position6DOF(x=-0.5)
+        result_low = safety.clamp_moog_position(pos_low)
+        assert result_low.x == -0.241
+
+        pos_high = Position6DOF(x=0.5)
+        result_high = safety.clamp_moog_position(pos_high)
+        assert result_high.x == 0.259
+
+    def test_sway_clamped(self, safety):
+        """TC-SAFE-002: Test sway (y) is clamped to ±0.259."""
+        pos_low = Position6DOF(y=-0.5)
+        result_low = safety.clamp_moog_position(pos_low)
+        assert result_low.y == -0.259
+
+        pos_high = Position6DOF(y=0.5)
+        result_high = safety.clamp_moog_position(pos_high)
+        assert result_high.y == 0.259
+
+    def test_heave_clamped(self, safety):
+        """TC-SAFE-002: Test heave (z) is clamped to ±0.178."""
+        pos_low = Position6DOF(z=-0.5)
+        result_low = safety.clamp_moog_position(pos_low)
+        assert result_low.z == -0.178
+
+        pos_high = Position6DOF(z=0.5)
+        result_high = safety.clamp_moog_position(pos_high)
+        assert result_high.z == 0.178
+
+    def test_roll_clamped(self, safety):
+        """TC-SAFE-002: Test roll is clamped to ±0.367 rad."""
+        pos_low = Position6DOF(roll=-0.5)
+        result_low = safety.clamp_moog_position(pos_low)
+        assert result_low.roll == -0.367
+
+        pos_high = Position6DOF(roll=0.5)
+        result_high = safety.clamp_moog_position(pos_high)
+        assert result_high.roll == 0.367
+
+    def test_pitch_clamped(self, safety):
+        """TC-SAFE-002: Test pitch is clamped to ±0.384 rad."""
+        pos_low = Position6DOF(pitch=-0.5)
+        result_low = safety.clamp_moog_position(pos_low)
+        assert result_low.pitch == -0.384
+
+        pos_high = Position6DOF(pitch=0.5)
+        result_high = safety.clamp_moog_position(pos_high)
+        assert result_high.pitch == 0.384
+
+    def test_yaw_clamped(self, safety):
+        """TC-SAFE-002: Test yaw is clamped to ±0.384 rad."""
+        pos_low = Position6DOF(yaw=-0.5)
+        result_low = safety.clamp_moog_position(pos_low)
+        assert result_low.yaw == -0.384
+
+        pos_high = Position6DOF(yaw=0.5)
+        result_high = safety.clamp_moog_position(pos_high)
+        assert result_high.yaw == 0.384
 
 
 # =============================================================================
-# EMERGENCY STOP TESTS
+# EMERGENCY STOP TESTS - TC-SAFE-003, TC-SAFE-004, TC-SAFE-005
 # =============================================================================
 
-class TestEmergencyStop:
-    """Tests for EmergencyStop class."""
-    
+class TestEmergencyStopModule:
+    """Tests for SafetyModule e-stop methods."""
+
+    def test_initial_state_not_estopped(self, safety):
+        """TC-SAFE-003: Test E-stop is inactive initially."""
+        assert safety.is_estopped() == False
+
+    def test_trigger_estop_activates(self, safety):
+        """TC-SAFE-003: Test trigger_estop() activates E-stop."""
+        safety.trigger_estop("Test trigger")
+        assert safety.is_estopped() == True
+
+    def test_reset_too_soon_fails(self, safety):
+        """TC-SAFE-004: Test reset() fails if called too soon after trigger."""
+        safety.trigger_estop("Test")
+        result = safety.reset_estop()
+        assert result == False
+        assert safety.is_estopped() == True
+
+    def test_reset_after_timeout_succeeds(self, safety):
+        """TC-SAFE-004: Test reset() succeeds after 2-second timeout."""
+        safety.trigger_estop("Test")
+        time.sleep(2.1)  # Wait for timeout
+        result = safety.reset_estop()
+        assert result == True
+        assert safety.is_estopped() == False
+
+    def test_callback_executed_on_trigger(self, safety):
+        """TC-SAFE-005: Test registered callbacks are executed on trigger."""
+        callback_executed = []
+
+        def my_callback():
+            callback_executed.append(True)
+
+        safety.register_estop_callback(my_callback)
+        safety.trigger_estop("Test")
+
+        assert len(callback_executed) == 1
+
+    def test_multiple_callbacks_executed(self, safety):
+        """TC-SAFE-005: Test multiple callbacks are all executed."""
+        results = []
+
+        safety.register_estop_callback(lambda: results.append('a'))
+        safety.register_estop_callback(lambda: results.append('b'))
+        safety.trigger_estop("Test")
+
+        assert 'a' in results
+        assert 'b' in results
+
+
+class TestEmergencyStopGlobal:
+    """Tests for global EmergencyStop class."""
+
     def test_initial_state_inactive(self):
-        """Test E-stop is inactive initially."""
-        from src.utils.safety import EmergencyStop
+        """TC-SAFE-003: Test E-stop is inactive initially."""
         assert EmergencyStop.is_active() == False
-    
+
     def test_trigger_activates(self):
-        """Test trigger() activates E-stop."""
-        from src.utils.safety import EmergencyStop
+        """TC-SAFE-003: Test trigger() activates E-stop."""
         EmergencyStop.trigger("Test trigger")
         assert EmergencyStop.is_active() == True
-    
+
     def test_reset_too_soon_fails(self):
-        """Test reset() fails if called too soon after trigger."""
-        from src.utils.safety import EmergencyStop
+        """TC-SAFE-004: Test reset() fails if called too soon."""
         EmergencyStop.trigger("Test")
         result = EmergencyStop.reset()
         assert result == False
         assert EmergencyStop.is_active() == True
-    
+
     def test_reset_after_timeout_succeeds(self):
-        """Test reset() succeeds after timeout period."""
-        from src.utils.safety import EmergencyStop, SafetyConfig
-        # Use very short timeout for testing
-        original_timeout = SafetyConfig.emergency_stop_timeout
-        SafetyConfig.emergency_stop_timeout = 0.1
-        
+        """TC-SAFE-004: Test reset() succeeds after timeout."""
         EmergencyStop.trigger("Test")
-        time.sleep(0.15)  # Wait for timeout
+        time.sleep(2.1)
         result = EmergencyStop.reset()
-        
-        SafetyConfig.emergency_stop_timeout = original_timeout  # Restore
-        
         assert result == True
         assert EmergencyStop.is_active() == False
-    
+
     def test_callback_executed_on_trigger(self):
-        """Test registered callbacks are executed on trigger."""
-        from src.utils.safety import EmergencyStop
+        """TC-SAFE-005: Test registered callbacks are executed."""
         callback_executed = []
-        
+
         def my_callback():
             callback_executed.append(True)
-        
+
         EmergencyStop.register_callback(my_callback)
         EmergencyStop.trigger("Test")
-        
+
         assert len(callback_executed) == 1
-    
+
     def test_multiple_callbacks_executed(self):
-        """Test multiple callbacks are all executed."""
-        from src.utils.safety import EmergencyStop
+        """TC-SAFE-005: Test multiple callbacks are all executed."""
         results = []
-        
+
         EmergencyStop.register_callback(lambda: results.append('a'))
         EmergencyStop.register_callback(lambda: results.append('b'))
         EmergencyStop.trigger("Test")
-        
+
         assert 'a' in results
         assert 'b' in results
 
@@ -226,17 +274,20 @@ class TestEmergencyStop:
 
 class TestSafetyState:
     """Tests for safety state property."""
-    
-    def test_normal_state_when_not_estopped(self, limiter):
-        """Test state is NORMAL when E-stop not active."""
-        from src.utils.safety import SafetyState
-        assert limiter.state == SafetyState.NORMAL
-    
-    def test_estop_state_when_triggered(self, limiter):
+
+    def test_normal_state_when_not_estopped(self, safety):
+        """Test state is NORMAL when E-stop not active and no warnings."""
+        assert safety.state == SafetyState.NORMAL
+
+    def test_warning_state_after_clamp(self, safety):
+        """Test state is WARNING after clamping occurs."""
+        safety.clamp_smc_position(1000.0)  # Trigger clamp
+        assert safety.state == SafetyState.WARNING
+
+    def test_estop_state_when_triggered(self, safety):
         """Test state is EMERGENCY_STOP when triggered."""
-        from src.utils.safety import EmergencyStop, SafetyState
-        EmergencyStop.trigger("Test")
-        assert limiter.state == SafetyState.EMERGENCY_STOP
+        safety.trigger_estop("Test")
+        assert safety.state == SafetyState.EMERGENCY_STOP
 
 
 # =============================================================================
@@ -245,30 +296,75 @@ class TestSafetyState:
 
 class TestWarningCount:
     """Tests for warning count tracking."""
-    
-    def test_initial_warning_count_zero(self, limiter):
+
+    def test_initial_warning_count_zero(self, safety):
         """Test warning count starts at zero."""
-        assert limiter.warning_count == 0
-    
-    def test_warning_count_increments_on_clamp(self, limiter):
-        """Test warning count increments when value is clamped."""
-        # limiter.clamp_smc_position(200.0)  # Way over limit
-        # assert limiter.warning_count > 0
-        pytest.skip("INF-112: Warning counting not yet implemented")
+        assert safety.warning_count == 0
+
+    def test_warning_count_increments_on_smc_clamp(self, safety):
+        """Test warning count increments when SMC value is clamped."""
+        safety.clamp_smc_position(1000.0)  # Way over limit
+        assert safety.warning_count == 1
+        safety.clamp_smc_position(-10.0)  # Below limit
+        assert safety.warning_count == 2
+
+    def test_warning_count_increments_on_moog_clamp(self, safety):
+        """Test warning count increments when MOOG value is clamped."""
+        pos = Position6DOF(x=1.0, y=1.0, z=1.0, roll=1.0, pitch=1.0, yaw=1.0)
+        safety.clamp_moog_position(pos)
+        # All 6 axes out of bounds = 6 warnings
+        assert safety.warning_count == 6
 
 
 # =============================================================================
-# HOME POSITION TESTS
+# SPEED LIMITING TESTS
 # =============================================================================
 
-class TestHomePositions:
-    """Tests for home position getters."""
-    
-    def test_smc_home_position(self, limiter):
-        """Test SMC home position is center (50mm)."""
-        assert limiter.get_home_position_smc() == 50.0
-    
-    def test_moog_home_position(self, limiter):
-        """Test MOOG home position is correct."""
-        home = limiter.get_home_position_moog()
-        assert home == (0.0, 0.0, -0.18, 0.0, 0.0, 0.0)
+class TestSpeedLimiting:
+    """Tests for limit_speed() method."""
+
+    def test_speed_within_limit_unchanged(self, safety):
+        """Test position change within speed limit passes unchanged."""
+        current = 100.0
+        target = 150.0  # 50mm change
+        dt = 0.2  # 0.2 seconds = 250 mm/s (within 500 mm/s limit)
+        result = safety.limit_speed(current, target, dt)
+        assert result == target
+        assert safety.warning_count == 0
+
+    def test_speed_above_limit_clamped(self, safety):
+        """Test position change above speed limit is clamped."""
+        current = 100.0
+        target = 300.0  # 200mm change
+        dt = 0.2  # 0.2 seconds = 1000 mm/s (exceeds 500 mm/s limit)
+        result = safety.limit_speed(current, target, dt)
+        # Max change = 500 mm/s * 0.2s = 100mm
+        expected = current + 100.0
+        assert result == expected
+        assert safety.warning_count == 1
+
+    def test_speed_limit_negative_direction(self, safety):
+        """Test speed limiting works in negative direction."""
+        current = 300.0
+        target = 100.0  # -200mm change
+        dt = 0.2  # Would be 1000 mm/s
+        result = safety.limit_speed(current, target, dt)
+        # Max change = -100mm
+        expected = current - 100.0
+        assert result == expected
+
+
+# =============================================================================
+# BACKWARD COMPATIBILITY TESTS
+# =============================================================================
+
+class TestBackwardCompatibility:
+    """Test that SafetyLimiter alias works."""
+
+    def test_safety_limiter_alias_exists(self):
+        """Test SafetyLimiter alias is available."""
+        from src.utils.safety import SafetyLimiter
+        limiter = SafetyLimiter()
+        assert limiter is not None
+        assert hasattr(limiter, 'clamp_smc_position')
+        assert hasattr(limiter, 'clamp_moog_position')
