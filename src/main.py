@@ -68,16 +68,16 @@ class PipelineStats:
     packets_received: int = 0
     motion_packets_processed: int = 0
     commands_sent: int = 0
-    total_latency_us: float = 0.0
-    max_latency_us: float = 0.0
-    min_latency_us: float = float('inf')
+    total_latency_ms: float = 0.0
+    max_latency_ms: float = 0.0
+    min_latency_ms: float = float('inf')
     start_time: float = 0.0
 
     @property
-    def avg_latency_us(self) -> float:
+    def avg_latency_ms(self) -> float:
         if self.motion_packets_processed == 0:
             return 0.0
-        return self.total_latency_us / self.motion_packets_processed
+        return self.total_latency_ms / self.motion_packets_processed
 
     @property
     def runtime_seconds(self) -> float:
@@ -85,11 +85,11 @@ class PipelineStats:
             return 0.0
         return time.time() - self.start_time
 
-    def update_latency(self, latency_us: float):
+    def update_latency(self, latency_ms: float):
         """Update latency statistics."""
-        self.total_latency_us += latency_us
-        self.max_latency_us = max(self.max_latency_us, latency_us)
-        self.min_latency_us = min(self.min_latency_us, latency_us)
+        self.total_latency_ms += latency_ms
+        self.max_latency_ms = max(self.max_latency_ms, latency_ms)
+        self.min_latency_ms = min(self.min_latency_ms, latency_ms)
 
 
 class F1MotionSimulator:
@@ -264,10 +264,10 @@ class F1MotionSimulator:
 
                 # End latency measurement
                 loop_end = time.perf_counter()
-                latency_us = (loop_end - loop_start) * 1_000_000
+                latency_ms = (loop_end - loop_start) * 1_000
 
                 self._stats.motion_packets_processed += 1
-                self._stats.update_latency(latency_us)
+                self._stats.update_latency(latency_ms)
 
                 # Periodic logging (every ~10 seconds at 60Hz)
                 if self._stats.motion_packets_processed % 600 == 0:
@@ -285,8 +285,8 @@ class F1MotionSimulator:
         stats = self._stats
         logger.info(
             f"Stats: {stats.motion_packets_processed} packets, "
-            f"latency avg={stats.avg_latency_us:.1f}us "
-            f"max={stats.max_latency_us:.1f}us, "
+            f"latency avg={stats.avg_latency_ms:.3f}ms "
+            f"max={stats.max_latency_ms:.3f}ms, "
             f"pos={self.motion_algorithm.current_position:.1f}mm"
         )
 
@@ -301,15 +301,15 @@ class F1MotionSimulator:
         logger.info(f"Motion packets processed: {stats.motion_packets_processed}")
         logger.info(f"Commands sent to actuator: {stats.commands_sent}")
         logger.info(f"Processing latency:")
-        logger.info(f"  Average: {stats.avg_latency_us:.1f} us")
-        logger.info(f"  Maximum: {stats.max_latency_us:.1f} us")
-        logger.info(f"  Minimum: {stats.min_latency_us:.1f} us")
+        logger.info(f"  Average: {stats.avg_latency_ms:.3f} ms")
+        logger.info(f"  Maximum: {stats.max_latency_ms:.3f} ms")
+        logger.info(f"  Minimum: {stats.min_latency_ms:.3f} ms")
 
         # Check latency target
-        if stats.avg_latency_us < 1000:
-            logger.info(f"  ✓ Target <1ms achieved ({stats.avg_latency_us:.1f}us < 1000us)")
+        if stats.avg_latency_ms < 1.0:
+            logger.info(f"  ✓ Target <1ms achieved ({stats.avg_latency_ms:.3f}ms)")
         else:
-            logger.warning(f"  ✗ Target <1ms NOT achieved ({stats.avg_latency_us:.1f}us)")
+            logger.warning(f"  ✗ Target <1ms NOT achieved ({stats.avg_latency_ms:.3f}ms)")
 
         logger.info("=" * 60)
 
