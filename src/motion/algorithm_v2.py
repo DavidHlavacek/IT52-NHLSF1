@@ -9,7 +9,7 @@ from src.telemetry.packet_parser import TelemetryData
 class AlgorithmConfig:
     dimension: str = "surge"      # surge, sway, heave
     scale: float = 80.0           # mm per g force
-    smoothing: float = 0.5        # 0-1 no-max smoothing
+    smoothing: float = 0        # 0-1 no-max smoothing
     threshold: float = 0.05       # ignore g forces below
     center_mm: float = 350.0      # center pos on actuator
     min_mm: float = 50.0          # min safe position
