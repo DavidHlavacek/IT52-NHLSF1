@@ -65,6 +65,7 @@ class SMCDriverV2:
         self.client: Optional[ModbusSerialClient] = None
         self.connected = False
         self.last_command_time = 0.0
+        self.last_position = 0.0
 
     def connect(self) -> bool:
         try:
@@ -162,6 +163,13 @@ class SMCDriverV2:
         if not self.connected:
             return False
 
+        # clamp to safe range
+        position_mm = max(self.config.min_mm, min(self.config.max_mm, position_mm))
+
+        # skip small change
+        if abs(position_mm - self.last_position) < 0.5:
+            return True
+
         # rate limiting
         if self.config.rate_limit_hz is not None:
             now = time.perf_counter()
@@ -170,10 +178,8 @@ class SMCDriverV2:
                 return True
             self.last_command_time = now    
 
-        # clamp to safe range
-        position_mm = max(self.config.min_mm, min(self.config.max_mm, position_mm))
-
         self._move_to_fast(position_mm)
+        self.last_position = position_mm
         return True
 
     def _move_to_fast(self, position_mm: float):
