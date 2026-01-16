@@ -45,7 +45,7 @@ motion:
   # Example: gain=100 means 1G causes 100mm movement from center
   # Higher = more dramatic movement, will hit limits during hard braking/crashes
   # Lower = subtle movement, more headroom
-  gain: 100.0
+  gain: 80.0
 
   # -------------------------------------------------------------------------
   # Smoothing

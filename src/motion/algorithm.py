@@ -39,11 +39,11 @@ class MotionDimension(Enum):
 class MotionConfig:
     """Configuration for motion algorithm."""
     dimension: MotionDimension = MotionDimension.SURGE
-    gain: float = 100.0
+    gain: float = 80.0
     smoothing: float = 0.5
     deadband: float = 0.05
     stroke_mm: float = 900.0
-    center_mm: float = 450.0
+    center_mm: float = 350.0
     soft_limit_mm: float = 50.0
 
     # Legacy params (kept for config compatibility)
@@ -163,11 +163,11 @@ def create_motion_config_from_dict(config_dict: dict) -> MotionConfig:
 
     return MotionConfig(
         dimension=dimension,
-        gain=config_dict.get("gain", 100.0),
+        gain=config_dict.get("gain", 80.0),
         smoothing=config_dict.get("smoothing", 0.5),
         deadband=config_dict.get("deadband", 0.05),
         stroke_mm=config_dict.get("stroke_mm", 900.0),
-        center_mm=config_dict.get("center_mm", 450.0),
+        center_mm=config_dict.get("center_mm", 350.0),
         soft_limit_mm=config_dict.get("soft_limit_mm", 50.0),
     )
 
@@ -176,7 +176,7 @@ if __name__ == "__main__":
     """Quick test."""
     logging.basicConfig(level=logging.INFO)
 
-    config = MotionConfig(gain=100.0, center_mm=450.0)
+    config = MotionConfig(gain=80.0, center_mm=350.0)
     algo = MotionAlgorithm(config)
 
     print("Testing simple direct mapping:")
