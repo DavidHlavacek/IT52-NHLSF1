@@ -25,13 +25,13 @@ from pymodbus.client import ModbusSerialClient
 
 @dataclass
 class DriverConfig:
-    port: str = 'COM5'
+    port: str = 'COM4'
     center_mm: float = 350.0
     min_mm: float = 50.0
     max_mm: float = 850.0
     speed: int = 1000 # 500 if too fast
     acceleration: int = 3000
-    rate_limit_hz: float = None # try 30 if issues
+    rate_limit_hz: float = 30 # try 30 if issues
 
 
 class SMCDriverV2:
