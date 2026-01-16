@@ -27,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-CENTER_MM = 450.0       # Center position
+CENTER_MM = 350.0       # Center position
 GAIN = 50.0             # mm per G (start conservative!)
 MIN_POS = 100.0         # Minimum position (mm)
 MAX_POS = 800.0         # Maximum position (mm)

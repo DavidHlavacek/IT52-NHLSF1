@@ -27,9 +27,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-CENTER_MM = 450.0
-MIN_POS = 150.0
-MAX_POS = 750.0
+CENTER_MM = 350.0
+MIN_POS = 100.0
+MAX_POS = 800.0
 COMMAND_RATE = 30
 
 # DRIFT PARAMETERS - tune these!

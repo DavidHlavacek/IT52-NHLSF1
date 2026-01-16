@@ -69,7 +69,7 @@ motion:
   # Actuator Limits
   # -------------------------------------------------------------------------
   stroke_mm: 900.0      # Total actuator stroke (LEL25LT-900)
-  center_mm: 450.0      # Center/home position
+  center_mm: 350.0      # Center/home position
   soft_limit_mm: 50.0   # Safety margin from each end (usable: 50-850mm)
 
 # =============================================================================
