@@ -5,58 +5,61 @@ telemetry:
   port: 20777           # F1 game default UDP port
   buffer_size: 2048     # UDP receive buffer size
 
-# Motion Algorithm Parameters
-# ---------------------------
-# ⚠️ WARNING: These are PLACEHOLDER values!
-# They MUST be tuned through physical testing in INF-111.
-# Start with SMALL values and increase gradually to avoid violent motion!
+# Motion Algorithm Parameters (INF-107, INF-147)
+# ===============================================
+# Note: Limits are in hardware sections below (drivers enforce them)
 motion:
-  # Translation scales (G-force → meters)
-  # INF-111: Tune these based on platform feel
-  surge_scale: 0.05     # Longitudinal G → X translation (braking/accel)
-  sway_scale: 0.05      # Lateral G → Y translation (cornering)
-  heave_scale: 0.03     # Vertical G → Z translation (bumps)
-  
-  # Rotation scales (G-force → radians)
-  # INF-111: Tune these based on platform feel
-  roll_scale: 0.3       # Lateral G → Roll rotation (lean into corners)
-  pitch_scale: 0.3      # Longitudinal G → Pitch rotation (brake dive)
-  yaw_scale: 0.1        # Yaw passthrough scale (usually minimal)
-  
-  # Safety limits
-  # INF-111: Adjust based on platform capabilities
-  max_translation: 0.1  # Max X/Y movement in meters
-  max_rotation: 0.26    # Max rotation in radians (~15 degrees)
-  
-  # Smoothing (exponential moving average)
-  # INF-111: Higher = smoother but more lag, lower = responsive but jerky
-  smoothing_factor: 0.3 # 0.0 = no smoothing, 1.0 = maximum smoothing
-  
-  # MOOG home position
-  home_z: -0.18         # Z position at rest (meters)
+  translation_scale: 0.1  # G-force to meters (1G = 10cm movement)
+  rotation_scale: 0.5     # Angle multiplier (0.5 = 50% of game angles)
+
+  # Hybrid washout filter (INF-147)
+  onset_gain: 1.0         # high-pass gain
+  sustained_gain: 0.4     # low-pass gain
+  deadband: 0.08          # noise filter
+  sample_rate: 60.0       # F1 telemetry rate (Hz)
+  washout_freq: 0.4       # high-pass cutoff (Hz) - lower = longer onset
+  sustained_freq: 3.0     # low-pass cutoff (Hz) - lower = smoother
+
+  # Slew rate limiting (INF-148)
+  slew_rate: 0.4          # max position change (m/s) - prevents jerky motion and oscillations
 
 # Hardware Configuration
 # ----------------------
+# Each driver is responsible for enforcing its hardware-specific limits
+
 hardware:
   smc:
     port: "/dev/ttyUSB0"  # Linux: /dev/ttyUSB0, Windows: COM3
     baudrate: 38400       # Fixed by SMC protocol
     parity: "E"           # Even parity
     controller_id: 1      # Modbus slave ID
-    stroke_mm: 100.0      # Actuator stroke length
-    
+    stroke_mm: 900.0      # Actuator stroke length (LEL25LT-900)
+    # Command rate limiting (INF-149)
+    min_command_interval: 0.05   # min seconds between commands
+    position_threshold_mm: 1.0   # min position change to send command
+    # SMC limits (symmetric, centered at 450mm)
+    limits:
+      surge_m: 0.45       # ±450mm from center
+
   moog:
-    # ⚠️ PLACEHOLDER VALUES - Must be discovered in INF-106!
+    # Network settings - PLACEHOLDER, discover in INF-106
     ip: "192.168.1.100"   # MOOG platform IP address
-    port: 6000            # MOOG UDP port
+    port: 991             # MOOG UDP port (protocol default)
+    timeout_s: 0.1        # socket timeout
     send_rate_hz: 60.0    # Command send rate (match F1 telemetry)
+    # MOOG 6DOF2000E limits (from protocol reference)
+    limits:
+      surge_pos_m: 0.259    # Forward limit (asymmetric!)
+      surge_neg_m: 0.241    # Backward limit (asymmetric!)
+      sway_m: 0.259         # Left/right
+      heave_m: 0.178        # Up/down
+      roll_rad: 0.3665      # ±21 degrees
+      pitch_rad: 0.3840     # ±22 degrees
+      yaw_rad: 0.3840       # ±22 degrees
 
 # INF-111: Parameter Tuning Guide
 # ===============================
-# 1. Start with all scale values at 0.01 (very small motion)
-# 2. Increase surge_scale first - test with braking
-# 3. Increase sway_scale - test with cornering
-# 4. Increase pitch_scale - enhances braking feel
-# 5. Increase roll_scale - enhances cornering feel
-# 6. Adjust smoothing_factor for comfort vs responsiveness
-# 7. Document final values for each user preference profile
+# 1. Start with translation_scale at 0.05 (conservative)
+# 2. Increase gradually while testing braking/cornering feel
+# 3. Adjust rotation_scale if rotations feel too strong/weak
+# 4. Document final values for each user preference profile

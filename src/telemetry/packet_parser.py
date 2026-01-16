@@ -1,60 +1,9 @@
 """
 F1 Packet Parser - INF-103
 
-NOTE: This skeleton is a STARTING POINT. Feel free to completely rewrite
-this file if you have a better approach. Just keep the core responsibility:
-parse F1 UDP packets and extract G-forces + orientation.
+Parses F1 24 UDP packets and extracts G-forces + orientation for the motion algorithm.
 
-Ticket: As a developer, I want to parse the F1 motion packet so that I can 
-        extract G-force and orientation data
-
-Assignee: David
-
-This module parses raw F1 UDP packets and extracts telemetry data.
-
-Acceptance Criteria:
-    ☐ Packet header parsed correctly (24 bytes)
-    ☐ Motion packet identified (packetId = 0)
-    ☐ Player car data extracted using playerCarIndex
-    ☐ gForceLateral, gForceLongitudinal, gForceVertical extracted
-    ☐ yaw, pitch, roll extracted
-    ☐ Values validated against expected ranges
-    ☐ Unit tests written for parser
-
-Dependencies:
-    - INF-100: UDP Listener must provide raw packets
-
-F1 2023 Packet Structure:
-    Header (24 bytes):
-        - packetFormat (uint16): 2023
-        - gameMajorVersion (uint8)
-        - gameMinorVersion (uint8)
-        - packetVersion (uint8)
-        - packetId (uint8): 0 = Motion
-        - sessionUID (uint64)
-        - sessionTime (float)
-        - frameIdentifier (uint32)
-        - playerCarIndex (uint8)
-        - secondaryPlayerCarIndex (uint8)
-        
-    Motion Data (per car, 60 bytes):
-        - worldPositionX, Y, Z (float)
-        - worldVelocityX, Y, Z (float)
-        - worldForwardDirX, Y, Z (int16, normalized)
-        - worldRightDirX, Y, Z (int16, normalized)
-        - gForceLateral (float)
-        - gForceLongitudinal (float)
-        - gForceVertical (float)
-        - yaw (float)
-        - pitch (float)
-        - roll (float)
-
-Usage:
-    from src.telemetry.packet_parser import PacketParser, TelemetryData
-    
-    parser = PacketParser()
-    telemetry = parser.parse_motion_packet(raw_data)
-    print(telemetry.g_force_lateral)
+See F1_24_PACKET_FORMAT.md for full protocol documentation.
 """
 
 import struct
@@ -62,173 +11,211 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src import DEBUG
 
+logger = logging.getLogger(__name__)
 
 @dataclass
 class TelemetryData:
     """
     Parsed telemetry data from F1 motion packet.
-    
-    Contains the physics data needed for the motion algorithm.
+
+    G-Forces (in G's):
+        lateral:      + right turn, - left turn
+        longitudinal: + accelerating, - braking
+        vertical:     ~1.0 at rest, >1.0 compression, <1.0 airborne
+
+    Orientation (in radians):
+        yaw:   heading direction (rotation around vertical axis)
+        pitch: nose up (+) / down (-)
+        roll:  lean right (+) / left (-)
     """
-    # G-Forces (in G's, typically -3 to +3)
-    g_force_lateral: float      # Left/right (negative = left, positive = right)
-    g_force_longitudinal: float # Forward/back (negative = braking, positive = acceleration)
-    g_force_vertical: float     # Up/down (typically around 1.0 due to gravity)
-    
-    # Orientation (in radians)
-    yaw: float    # Rotation around vertical axis
-    pitch: float  # Nose up/down
-    roll: float   # Lean left/right
-    
-    # Optional: suspension data for enhanced motion
-    suspension_position: Optional[list] = None  # [RL, RR, FL, FR] in mm
-    
+
+    g_force_lateral: float
+    g_force_longitudinal: float
+    g_force_vertical: float
+    yaw: float
+    pitch: float
+    roll: float
+
     def __str__(self):
         return (
-            f"TelemetryData(g_lat={self.g_force_lateral:.2f}, "
-            f"g_long={self.g_force_longitudinal:.2f}, "
-            f"g_vert={self.g_force_vertical:.2f}, "
-            f"yaw={self.yaw:.2f}, pitch={self.pitch:.2f}, roll={self.roll:.2f})"
+            f"TelemetryData("
+            f"g=[{self.g_force_lateral:+.2f}, {self.g_force_longitudinal:+.2f}, {self.g_force_vertical:+.2f}], "
+            f"rot=[{self.yaw:.2f}, {self.pitch:.2f}, {self.roll:.2f}])"
         )
 
 
 class PacketParser:
     """
-    Parses F1 UDP telemetry packets.
-    
-    Supports F1 2023 packet format. The parser extracts motion data
-    for the player's car and returns a TelemetryData object.
-    
-    Example:
-        parser = PacketParser()
-        data = parser.parse_motion_packet(raw_bytes)
-        if data:
-            print(f"G-Force: {data.g_force_lateral}")
+    Parses F1 24 UDP telemetry packets.
+
+    Only extracts Motion packets (type 0) - other packet types are ignored.
     """
-    
-    # Packet type IDs
+
+    # Packet type
     PACKET_ID_MOTION = 0
-    PACKET_ID_SESSION = 1
-    PACKET_ID_LAP_DATA = 2
-    # ... other packet types not needed for motion
-    
-    # Struct formats (little-endian)
-    HEADER_FORMAT = '<HBBBBQfIBB'  # 24 bytes
-    HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
-    
-    # Motion data per car
-    MOTION_DATA_FORMAT = '<ffffffhhhhhhffffff'  # 60 bytes per car
-    MOTION_DATA_SIZE = struct.calcsize(MOTION_DATA_FORMAT)
-    
-    # Valid ranges for data validation
-    G_FORCE_MIN = -6.0
-    G_FORCE_MAX = 6.0
-    
+
+    # F1 24 Header: 29 bytes
+    # <hBBBBBQfIIBB = int16, 6×uint8, uint64, float, 2×uint32, 2×uint8
+    HEADER_FORMAT = '<hBBBBBQfIIBB'
+    HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 29
+
+    # Motion data per car: 60 bytes
+    # 6 floats + 6 int16 + 6 floats
+    MOTION_DATA_FORMAT = '<ffffffhhhhhhffffff'
+    MOTION_DATA_SIZE = struct.calcsize(MOTION_DATA_FORMAT)  # 60
+
+    # Warning threshold (normal racing is ±5G, crashes can exceed)
+    G_FORCE_WARN_THRESHOLD = 10.0
+
+    # Number of cars in packet
+    MAX_CARS = 22
+
     def __init__(self):
-        """Initialize the packet parser."""
         self._packets_parsed = 0
         self._invalid_packets = 0
-    
+
     def parse_header(self, data: bytes) -> Optional[dict]:
         """
-        Parse the packet header.
-        
-        TODO [David]: Implement this method
-        
-        Args:
-            data: Raw packet bytes (at least 24 bytes)
-            
-        Returns:
-            dict with header fields, or None if invalid
-            
-        Steps:
-            1. Check data length >= HEADER_SIZE
-            2. Unpack using HEADER_FORMAT
-            3. Return dict with keys:
-               - packet_format, game_major_version, game_minor_version
-               - packet_version, packet_id, session_uid
-               - session_time, frame_identifier
-               - player_car_index, secondary_player_car_index
+        Parse packet header (29 bytes for F1 24).
+
+        Returns dict with header fields, or None if invalid.
         """
-        # TODO: Implement header parsing
-        raise NotImplementedError("INF-103: Implement parse_header()")
-    
+        if len(data) < self.HEADER_SIZE:
+            return None
+
+        try:
+            fields = struct.unpack(self.HEADER_FORMAT, data[:self.HEADER_SIZE])
+            return {
+                'packet_format': fields[0],
+                'game_year': fields[1],
+                'game_major_version': fields[2],
+                'game_minor_version': fields[3],
+                'packet_version': fields[4],
+                'packet_id': fields[5],
+                'session_uid': fields[6],
+                'session_time': fields[7],
+                'frame_identifier': fields[8],
+                'overall_frame_identifier': fields[9],
+                'player_car_index': fields[10],
+                'secondary_player_car_index': fields[11],
+            }
+        except struct.error:
+            return None
+
     def parse_motion_packet(self, data: bytes) -> Optional[TelemetryData]:
         """
-        Parse a motion packet and extract player car telemetry.
-        
-        TODO [David]: Implement this method
-        
-        Args:
-            data: Raw UDP packet bytes
-            
-        Returns:
-            TelemetryData object, or None if not a motion packet
-            
-        Steps:
-            1. Parse header using parse_header()
-            2. Check if packet_id == PACKET_ID_MOTION, return None if not
-            3. Calculate offset for player car: 
-               HEADER_SIZE + (player_car_index * MOTION_DATA_SIZE)
-            4. Unpack motion data using MOTION_DATA_FORMAT
-            5. Extract g-forces and orientation
-            6. Validate values using _validate_telemetry()
-            7. Return TelemetryData object
-            
-        Handle exceptions:
-            - struct.error: Log error, return None
-            - IndexError: Log error, return None
+        Parse motion packet and extract player car telemetry.
+
+        Returns TelemetryData or None if not a motion packet.
         """
-        # TODO: Implement motion packet parsing
-        raise NotImplementedError("INF-103: Implement parse_motion_packet()")
-    
-    def _validate_telemetry(self, telemetry: TelemetryData) -> bool:
-        """
-        Validate telemetry values are within expected ranges.
-        
-        TODO [David]: Implement this method
-        
-        Args:
-            telemetry: TelemetryData to validate
-            
-        Returns:
-            True if valid, False otherwise
-            
-        Checks:
-            - G-forces within G_FORCE_MIN to G_FORCE_MAX
-            - Log warning if values seem unusual
-        """
-        # TODO: Implement validation
-        raise NotImplementedError("INF-103: Implement _validate_telemetry()")
-    
+        header = self.parse_header(data)
+        if header is None:
+            self._invalid_packets += 1
+            return None
+
+        # Only process Motion packets
+        if header['packet_id'] != self.PACKET_ID_MOTION:
+            return None
+
+        player_index = header['player_car_index']
+        if player_index >= self.MAX_CARS:
+            logger.warning(f"Invalid player_car_index: {player_index}")
+            self._invalid_packets += 1
+            return None
+
+        # Calculate offset to player's car data
+        motion_offset = self.HEADER_SIZE + (player_index * self.MOTION_DATA_SIZE)
+        motion_end = motion_offset + self.MOTION_DATA_SIZE
+
+        if len(data) < motion_end:
+            logger.warning(f"Packet too short: {len(data)} < {motion_end}")
+            self._invalid_packets += 1
+            return None
+
+        try:
+            motion = struct.unpack(
+                self.MOTION_DATA_FORMAT,
+                data[motion_offset:motion_end]
+            )
+        except struct.error as e:
+            logger.warning(f"Failed to unpack motion data: {e}")
+            self._invalid_packets += 1
+            return None
+
+        # Extract G-forces and orientation (indices 12-17 in motion tuple)
+        telemetry = TelemetryData(
+            g_force_lateral=motion[12],
+            g_force_longitudinal=motion[13],
+            g_force_vertical=motion[14],
+            yaw=motion[15],
+            pitch=motion[16],
+            roll=motion[17],
+        )
+
+        self._warn_if_extreme(telemetry)
+        self._packets_parsed += 1
+        if DEBUG:
+            print(telemetry)
+        return telemetry
+
+    def _warn_if_extreme(self, telemetry: TelemetryData) -> None:
+        """Log warning if G-force values are unusually high (possible crash/glitch)."""
+        g_forces = [
+            ('lateral', telemetry.g_force_lateral),
+            ('longitudinal', telemetry.g_force_longitudinal),
+            ('vertical', telemetry.g_force_vertical),
+        ]
+
+        for name, value in g_forces:
+            if abs(value) > self.G_FORCE_WARN_THRESHOLD:
+                logger.warning(f"Extreme G-force {name}: {value:.1f}G")
+
     @property
     def stats(self) -> dict:
         """Return parsing statistics."""
         return {
-            "packets_parsed": self._packets_parsed,
-            "invalid_packets": self._invalid_packets
+            'packets_parsed': self._packets_parsed,
+            'invalid_packets': self._invalid_packets,
         }
 
 
-# For standalone testing
-if __name__ == "__main__":
-    """
-    Test the packet parser with sample data.
-    
-    Run: python -m src.telemetry.packet_parser
-    """
+# Standalone test with recording file
+if __name__ == '__main__':
+    import os
+
     logging.basicConfig(level=logging.DEBUG)
-    
-    # Create a mock motion packet for testing
-    # In real usage, this comes from UDPListener
-    print("Packet Parser test")
+
+    print("Packet Parser Test")
     print("=" * 40)
-    
-    parser = PacketParser()
-    
-    # TODO: Add test with real or mock packet data
-    print("Parser initialized successfully")
     print(f"Header size: {PacketParser.HEADER_SIZE} bytes")
-    print(f"Motion data size per car: {PacketParser.MOTION_DATA_SIZE} bytes")
+    print(f"Motion data per car: {PacketParser.MOTION_DATA_SIZE} bytes")
+    print()
+
+    # Try to load a recording
+    recording_path = 'recordings/spa_60sec.bin'
+    if os.path.exists(recording_path):
+        print(f"Testing with {recording_path}...")
+
+        parser = PacketParser()
+
+        with open(recording_path, 'rb') as f:
+            count = struct.unpack('<I', f.read(4))[0]
+
+            parsed = 0
+            for i in range(min(100, count)):
+                timestamp, length = struct.unpack('<fI', f.read(8))
+                data = f.read(length)
+
+                result = parser.parse_motion_packet(data)
+                if result:
+                    parsed += 1
+                    if parsed <= 3:
+                        print(f"  [{timestamp:.2f}s] {result}")
+
+        print()
+        print(f"Parsed {parsed} motion packets from first 100 packets")
+        print(f"Stats: {parser.stats}")
+    else:
+        print("No recording found. Run telemetry_recorder.py first.")
