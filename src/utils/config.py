@@ -39,7 +39,7 @@ DEFAULT_CONFIG = {
         "highpass_cutoff_hz": 1.0,  # Filter cutoff (0.5-2.0 Hz typical)
 
         # Gain settings
-        "gain": 100.0,              # mm per G (or mm per radian for angles)
+        "gain": 200.0,              # mm per G (higher = more dramatic movement)
 
         # Anti-oscillation settings
         "deadband": 0.05,           # Input change threshold (G or radians)

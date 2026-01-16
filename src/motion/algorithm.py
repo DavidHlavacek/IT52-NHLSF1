@@ -55,8 +55,8 @@ class MotionConfig:
     dimension: MotionDimension = MotionDimension.SURGE
 
     # Gain: how much actuator moves per G (or per radian for angles)
-    # Example: gain=100 means 1G causes 100mm movement from center
-    gain: float = 100.0
+    # Example: gain=200 means 1G causes 200mm movement from center
+    gain: float = 200.0
 
     # Smoothing factor (0.0-1.0)
     # Higher = more smoothing (slower response)
@@ -96,7 +96,7 @@ class MotionAlgorithm:
     With simple exponential smoothing for noise reduction.
 
     Example:
-        config = MotionConfig(dimension=MotionDimension.SURGE, gain=100.0)
+        config = MotionConfig(dimension=MotionDimension.SURGE, gain=200.0)
         algo = MotionAlgorithm(config)
 
         # In main loop:
@@ -270,7 +270,7 @@ if __name__ == "__main__":
 
     config = MotionConfig(
         dimension=MotionDimension.SURGE,
-        gain=100.0,      # 1G = 100mm movement
+        gain=200.0,      # 1G = 200mm movement
         smoothing=0.3,   # Light smoothing
         center_mm=450.0
     )
