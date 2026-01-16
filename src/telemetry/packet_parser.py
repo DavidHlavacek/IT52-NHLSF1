@@ -314,8 +314,8 @@ class PacketParser:
                 session_time=header.session_time
             )
 
-            # Validate telemetry data
-            if not self._validate_telemetry(telemetry):
+            # Validate and clamp telemetry data (clamps extreme G-forces, doesn't reject!)
+            if not self._validate_and_clamp_telemetry(telemetry):
                 self._invalid_packets += 1
                 return None
 
@@ -334,21 +334,33 @@ class PacketParser:
             self._invalid_packets += 1
             return None
 
-    def _validate_telemetry(self, telemetry: TelemetryData) -> bool:
+    def _clamp_g_force(self, value: float) -> float:
         """
-        Validate telemetry values are within expected ranges.
+        Clamp G-force to valid range.
+
+        During crashes, G-forces can exceed normal limits.
+        Instead of rejecting these packets, we clamp to max values
+        so crashes still produce maximum actuator movement!
+        """
+        if value != value:  # NaN check
+            return 0.0  # Safe default for corrupt data
+        return max(self.G_FORCE_MIN, min(self.G_FORCE_MAX, value))
+
+    def _validate_and_clamp_telemetry(self, telemetry: TelemetryData) -> bool:
+        """
+        Validate telemetry and clamp extreme values.
 
         Args:
-            telemetry: TelemetryData to validate
+            telemetry: TelemetryData to validate and clamp
 
         Returns:
-            True if valid, False otherwise
+            True if valid (possibly clamped), False only for corrupt data (NaN)
 
         Note:
-            Invalid data usually indicates parsing errors or corrupt packets.
-            Extreme but valid G-forces (e.g., crashes) should still pass.
+            Extreme G-forces (crashes) are CLAMPED, not rejected!
+            This ensures crashes produce maximum motion response.
         """
-        # Check G-forces are within physical limits
+        # Check for NaN (corrupt data) - only thing we reject
         g_forces = [
             telemetry.g_force_lateral,
             telemetry.g_force_longitudinal,
@@ -356,20 +368,36 @@ class PacketParser:
         ]
 
         for g in g_forces:
-            if not (self.G_FORCE_MIN <= g <= self.G_FORCE_MAX):
-                logger.warning(f"G-force out of range: {g}")
-                return False
-
-            # Check for NaN
             if g != g:  # NaN check
-                logger.warning("G-force is NaN")
+                logger.warning("G-force is NaN - corrupt packet")
                 return False
 
-        # Check angles are reasonable (not NaN)
+        # Check angles for NaN
         for angle in [telemetry.yaw, telemetry.pitch, telemetry.roll]:
             if angle != angle:  # NaN check
-                logger.warning("Angle is NaN")
+                logger.warning("Angle is NaN - corrupt packet")
                 return False
+
+        # CLAMP G-forces to valid range (don't reject!)
+        # This ensures crashes still produce maximum motion
+        original_lat = telemetry.g_force_lateral
+        original_long = telemetry.g_force_longitudinal
+        original_vert = telemetry.g_force_vertical
+
+        telemetry.g_force_lateral = self._clamp_g_force(telemetry.g_force_lateral)
+        telemetry.g_force_longitudinal = self._clamp_g_force(telemetry.g_force_longitudinal)
+        telemetry.g_force_vertical = self._clamp_g_force(telemetry.g_force_vertical)
+
+        # Log if clamping occurred (crash detected!)
+        if (telemetry.g_force_lateral != original_lat or
+            telemetry.g_force_longitudinal != original_long or
+            telemetry.g_force_vertical != original_vert):
+            logger.debug(
+                f"G-force clamped (crash?): "
+                f"lat {original_lat:.1f}->{telemetry.g_force_lateral:.1f}, "
+                f"long {original_long:.1f}->{telemetry.g_force_longitudinal:.1f}, "
+                f"vert {original_vert:.1f}->{telemetry.g_force_vertical:.1f}"
+            )
 
         return True
 
