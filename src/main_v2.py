@@ -6,7 +6,7 @@ Pipeline: F1 Game -> UDP -> Parser -> Algorithm -> Driver -> Actuator
 
 import time
 import signal
-from src.telemetry.udp_listener import UDPListener
+from src.telemetry.udp_listener_v2 import UDPListenerV2
 from src.telemetry.packet_parser import PacketParser
 from src.motion.algorithm_v2 import MotionAlgorithmV2
 from src.drivers.smc_driver_v2 import SMCDriverV2
@@ -15,7 +15,7 @@ from src.drivers.smc_driver_v2 import SMCDriverV2
 class Simulator:
     def __init__(self):
         self.running = True
-        self.listener = UDPListener()
+        self.listener = UDPListenerV2()
         self.parser = PacketParser()
         self.algorithm = MotionAlgorithmV2()
         self.driver = SMCDriverV2()
